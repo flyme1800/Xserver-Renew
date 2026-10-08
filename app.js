@@ -2,9 +2,10 @@ const { chromium } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 
-// ==============================
+// ============================================================
 // XServer 账户配置
-// ==============================
+// ============================================================
+
 const ACCOUNTS = process.env.ACCOUNTS || `
 [
     {
@@ -13,28 +14,34 @@ const ACCOUNTS = process.env.ACCOUNTS || `
     }
 ]`;
 
-// ==============================
-// Telegram 配置
-// ==============================
+// ============================================================
+// Telegram
+// ============================================================
+
 const TG_CHAT_ID = process.env.TG_CHAT_ID || '';
 const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN || '';
 
-// ==============================
-// 代理配置
-// ==============================
+// ============================================================
+// Proxy
+// ============================================================
+
 const IS_PROXY = process.env.IS_PROXY === 'true';
+
 const PROXY_SERVER =
-    process.env.PROXY_SERVER || 'socks5://127.0.0.1:1080';
+    process.env.PROXY_SERVER ||
+    'socks5://127.0.0.1:1080';
 
-// ==============================
-// 全局超时
-// ==============================
+// ============================================================
+// 时间配置
+// ============================================================
+
 const DEFAULT_TIMEOUT = 30000;
-const LOGIN_TIMEOUT = 60000;
+const NAVIGATION_TIMEOUT = 60000;
 
-// ==============================
-// Shanghai 时间
-// ==============================
+// ============================================================
+// 上海时间
+// ============================================================
+
 function getShanghaiTime() {
     return new Date().toLocaleString('zh-CN', {
         timeZone: 'Asia/Shanghai',
@@ -44,21 +51,27 @@ function getShanghaiTime() {
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
-        hour12: false,
+        hour12: false
     });
 }
 
-// ==============================
-// 清理文件名
-// ==============================
+// ============================================================
+// 文件名清理
+// ============================================================
+
 function safeFileName(name) {
-    return String(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+    return String(name)
+        .replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-// ==============================
-// Telegram 通知
-// ==============================
-async function sendTelegramNotification(message, imagePath = null) {
+// ============================================================
+// Telegram
+// ============================================================
+
+async function sendTelegramNotification(
+    message,
+    imagePath = null
+) {
     if (!TG_BOT_TOKEN || !TG_CHAT_ID) {
         console.log(
             '⚠️ 未设置 Telegram Bot Token 或 Chat ID，跳过通知。'
@@ -67,17 +80,33 @@ async function sendTelegramNotification(message, imagePath = null) {
     }
 
     try {
-        // ==========================
-        // 发送截图
-        // ==========================
-        if (imagePath && fs.existsSync(imagePath)) {
+
+        // ----------------------------------------------------
+        // 图片
+        // ----------------------------------------------------
+
+        if (
+            imagePath &&
+            fs.existsSync(imagePath)
+        ) {
+
             const formData = new FormData();
 
-            formData.append('chat_id', TG_CHAT_ID);
-            formData.append('caption', message);
+            formData.append(
+                'chat_id',
+                TG_CHAT_ID
+            );
 
-            const fileBuffer = fs.readFileSync(imagePath);
-            const blob = new Blob([fileBuffer]);
+            formData.append(
+                'caption',
+                message
+            );
+
+            const fileBuffer =
+                fs.readFileSync(imagePath);
+
+            const blob =
+                new Blob([fileBuffer]);
 
             formData.append(
                 'photo',
@@ -85,68 +114,81 @@ async function sendTelegramNotification(message, imagePath = null) {
                 path.basename(imagePath)
             );
 
-            const response = await fetch(
-                `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto`,
-                {
-                    method: 'POST',
-                    body: formData
-                }
-            );
+            const response =
+                await fetch(
+                    `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendPhoto`,
+                    {
+                        method: 'POST',
+                        body: formData
+                    }
+                );
 
             if (!response.ok) {
+
                 console.error(
                     '❌ Telegram 图片发送失败:',
                     await response.text()
                 );
+
             } else {
+
                 console.log(
-                    '✅ Telegram 通知(含图片)已发送'
+                    '✅ Telegram 图片通知已发送'
                 );
             }
 
             return;
         }
 
-        // ==========================
-        // 发送文字
-        // ==========================
-        const response = await fetch(
-            `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    chat_id: TG_CHAT_ID,
-                    text: message
-                })
-            }
-        );
+        // ----------------------------------------------------
+        // 文字
+        // ----------------------------------------------------
+
+        const response =
+            await fetch(
+                `https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
+                    body: JSON.stringify({
+                        chat_id: TG_CHAT_ID,
+                        text: message
+                    })
+                }
+            );
 
         if (!response.ok) {
+
             console.error(
                 '❌ Telegram 消息发送失败:',
                 await response.text()
             );
+
         } else {
+
             console.log(
                 '✅ Telegram 文字通知已发送'
             );
         }
 
     } catch (error) {
+
         console.error(
-            '❌ 发送 Telegram 通知时出错:',
+            '❌ Telegram 通知异常:',
             error.message
         );
     }
 }
 
-// ==============================
-// 获取页面信息
-// ==============================
+// ============================================================
+// 页面信息
+// ============================================================
+
 async function getPageInfo(page) {
+
     let title = '';
     let url = '';
     let bodyText = '';
@@ -160,9 +202,13 @@ async function getPageInfo(page) {
     } catch (_) {}
 
     try {
-        bodyText = await page.locator('body').innerText({
-            timeout: 5000
-        });
+
+        bodyText =
+            await page.locator('body')
+                .innerText({
+                    timeout: 5000
+                });
+
     } catch (_) {}
 
     return {
@@ -172,24 +218,34 @@ async function getPageInfo(page) {
     };
 }
 
-// ==============================
-// 保存截图
-// ==============================
-async function saveScreenshot(page, prefix, username) {
+// ============================================================
+// 截图
+// ============================================================
+
+async function saveScreenshot(
+    page,
+    prefix,
+    username
+) {
+
     const fileName =
         `${prefix}_${safeFileName(username)}_${Date.now()}.png`;
 
     try {
+
         await page.screenshot({
             path: fileName,
             fullPage: true
         });
 
-        console.log(`📸 截图已保存: ${fileName}`);
+        console.log(
+            `📸 截图已保存: ${fileName}`
+        );
 
         return fileName;
 
     } catch (error) {
+
         console.error(
             `⚠️ 截图失败: ${error.message}`
         );
@@ -198,22 +254,22 @@ async function saveScreenshot(page, prefix, username) {
     }
 }
 
-// ==============================
-// 解析账户
-// ==============================
+// ============================================================
+// 读取账户
+// ============================================================
+
 function loadAccounts() {
+
     let users = [];
 
     try {
+
         if (process.env.ACCOUNTS) {
 
-            users = JSON.parse(process.env.ACCOUNTS);
-
-            if (!Array.isArray(users)) {
-                throw new Error(
-                    'ACCOUNTS 必须是 JSON 对象数组'
+            users =
+                JSON.parse(
+                    process.env.ACCOUNTS
                 );
-            }
 
         } else {
 
@@ -221,13 +277,20 @@ function loadAccounts() {
                 '⚠️ 未找到 ACCOUNTS 环境变量，使用默认配置。'
             );
 
-            users = JSON.parse(ACCOUNTS);
+            users =
+                JSON.parse(ACCOUNTS);
+        }
+
+        if (!Array.isArray(users)) {
+            throw new Error(
+                'ACCOUNTS 必须是 JSON 数组'
+            );
         }
 
     } catch (error) {
 
         console.error(
-            '❌ 解析 ACCOUNTS 出错:',
+            '❌ ACCOUNTS 解析失败:',
             error.message
         );
 
@@ -237,25 +300,795 @@ function loadAccounts() {
     return users;
 }
 
-// ==============================
+// ============================================================
+// 判断页面是否出现 Turnstile
+// ============================================================
+
+async function detectTurnstile(page) {
+
+    try {
+
+        // Cloudflare Turnstile iframe
+        const iframe =
+            page.locator(
+                'iframe[src*="challenges.cloudflare.com"]'
+            );
+
+        if (
+            await iframe.count() > 0
+        ) {
+            return true;
+        }
+
+        // Turnstile container
+        const container =
+            page.locator(
+                '.cf-turnstile'
+            );
+
+        if (
+            await container.count() > 0
+        ) {
+            return true;
+        }
+
+        // 页面文字
+        const bodyText =
+            await page.locator('body')
+                .innerText()
+                .catch(() => '');
+
+        if (
+            bodyText.includes(
+                '私はロボットではありません'
+            )
+        ) {
+            return true;
+        }
+
+    } catch (_) {}
+
+    return false;
+}
+
+// ============================================================
+// 判断 Turnstile 是否已经完成
+// ============================================================
+
+async function isTurnstilePassed(page) {
+
+    try {
+
+        // ---------------------------------------------
+        // cf-turnstile-response
+        // ---------------------------------------------
+
+        const responseInput =
+            page.locator(
+                'input[name="cf-turnstile-response"]'
+            );
+
+        if (
+            await responseInput.count() > 0
+        ) {
+
+            const value =
+                await responseInput
+                    .first()
+                    .inputValue()
+                    .catch(() => '');
+
+            if (
+                value &&
+                value.length > 0
+            ) {
+                return true;
+            }
+        }
+
+        // ---------------------------------------------
+        // iframe 内 checkbox 状态
+        // ---------------------------------------------
+
+        for (
+            const frame of page.frames()
+        ) {
+
+            if (
+                !frame.url().includes(
+                    'challenges.cloudflare.com'
+                )
+            ) {
+                continue;
+            }
+
+            try {
+
+                const checkbox =
+                    frame.getByRole(
+                        'checkbox'
+                    );
+
+                if (
+                    await checkbox.count() > 0
+                ) {
+
+                    const ariaChecked =
+                        await checkbox
+                            .first()
+                            .getAttribute(
+                                'aria-checked'
+                            );
+
+                    if (
+                        ariaChecked === 'true'
+                    ) {
+                        return true;
+                    }
+                }
+
+            } catch (_) {}
+        }
+
+    } catch (_) {}
+
+    return false;
+}
+
+// ============================================================
+// 等待 Turnstile
+//
+// 注意：
+// 不自动破解、不注入 token、不绕过 Cloudflare。
+// 如果已经由正常浏览器环境完成验证，则继续。
+// ============================================================
+
+async function waitForTurnstile(
+    page,
+    maxWait = 15000
+) {
+
+    const detected =
+        await detectTurnstile(page);
+
+    if (!detected) {
+
+        console.log(
+            'ℹ️ 未检测到 Cloudflare Turnstile'
+        );
+
+        return {
+            detected: false,
+            passed: true
+        };
+    }
+
+    console.log(
+        '🛡️ 检测到 Cloudflare Turnstile'
+    );
+
+    console.log(
+        '⏳ 等待 Turnstile 正常完成验证...'
+    );
+
+    const start =
+        Date.now();
+
+    while (
+        Date.now() - start < maxWait
+    ) {
+
+        const passed =
+            await isTurnstilePassed(page);
+
+        if (passed) {
+
+            console.log(
+                '✅ Turnstile 验证状态已通过'
+            );
+
+            return {
+                detected: true,
+                passed: true
+            };
+        }
+
+        await page.waitForTimeout(1000);
+    }
+
+    console.log(
+        '⚠️ Turnstile 尚未完成验证'
+    );
+
+    return {
+        detected: true,
+        passed: false
+    };
+}
+
+// ============================================================
+// 登录
+// ============================================================
+
+async function loginXServer(
+    page,
+    username,
+    password
+) {
+
+    console.log(
+        '🌐 访问 XServer 登录页面...'
+    );
+
+    await page.goto(
+        'https://secure.xserver.ne.jp/xapanel/login/xmgame',
+        {
+            waitUntil:
+                'domcontentloaded',
+            timeout:
+                NAVIGATION_TIMEOUT
+        }
+    );
+
+    console.log(
+        `🔗 URL: ${page.url()}`
+    );
+
+    console.log(
+        `📄 标题: ${await page.title()}`
+    );
+
+    // --------------------------------------------------------
+    // 用户名
+    // --------------------------------------------------------
+
+    console.log(
+        '⏳ 等待用户名输入框...'
+    );
+
+    const usernameInput =
+        page.getByRole(
+            'textbox',
+            {
+                name:
+                    'XServerアカウントID または メールアドレス',
+                exact: true
+            }
+        );
+
+    await usernameInput.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    await usernameInput.fill(
+        username
+    );
+
+    // --------------------------------------------------------
+    // 密码
+    // --------------------------------------------------------
+
+    const passwordInput =
+        page.locator(
+            '#user_password'
+        );
+
+    await passwordInput.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    await passwordInput.fill(
+        password
+    );
+
+    console.log(
+        '✅ 账号密码填写完成'
+    );
+
+    // --------------------------------------------------------
+    // 检查 Turnstile
+    // --------------------------------------------------------
+
+    const turnstile =
+        await waitForTurnstile(
+            page,
+            15000
+        );
+
+    // --------------------------------------------------------
+    // 如果存在 Turnstile 且没有通过
+    // --------------------------------------------------------
+
+    if (
+        turnstile.detected &&
+        !turnstile.passed
+    ) {
+
+        return {
+            success: false,
+            reason: 'TURNSTILE_REQUIRED'
+        };
+    }
+
+    // --------------------------------------------------------
+    // 登录按钮
+    //
+    // 使用明确 ID：
+    // #login-submit
+    //
+    // 不使用：
+    // getByRole('button', {name:'ログインする'})
+    //
+    // 因为 Google 登录按钮也可能匹配。
+    // --------------------------------------------------------
+
+    const loginButton =
+        page.locator(
+            '#login-submit'
+        );
+
+    await loginButton.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    console.log(
+        '🖱️ 点击「ログインする」...'
+    );
+
+    await loginButton.click();
+
+    console.log(
+        '✅ 登录按钮已点击'
+    );
+
+    // --------------------------------------------------------
+    // 等待登录
+    // --------------------------------------------------------
+
+    console.log(
+        '⏳ 等待 XServer 登录结果...'
+    );
+
+    for (
+        let i = 0;
+        i < 30;
+        i++
+    ) {
+
+        const currentUrl =
+            page.url();
+
+        // ----------------------------------------------
+        // 游戏管理
+        // ----------------------------------------------
+
+        const gameLink =
+            page.getByRole(
+                'link',
+                {
+                    name:
+                        'ゲーム管理',
+                    exact: true
+                }
+            );
+
+        if (
+            await gameLink.count() > 0
+        ) {
+
+            try {
+
+                if (
+                    await gameLink.isVisible()
+                ) {
+
+                    console.log(
+                        '✅ 登录成功'
+                    );
+
+                    return {
+                        success: true
+                    };
+                }
+
+            } catch (_) {}
+        }
+
+        // ----------------------------------------------
+        // 检查登录错误
+        // ----------------------------------------------
+
+        const bodyText =
+            await page.locator('body')
+                .innerText()
+                .catch(() => '');
+
+        if (
+            bodyText.includes(
+                '「私はロボットではありません」にチェックを入れてください'
+            )
+        ) {
+
+            console.log(
+                '❌ XServer 要求完成 Turnstile'
+            );
+
+            return {
+                success: false,
+                reason: 'TURNSTILE_REQUIRED'
+            };
+        }
+
+        // ----------------------------------------------
+        // 常见账号密码错误
+        // ----------------------------------------------
+
+        if (
+            bodyText.includes(
+                'ログインできません'
+            ) ||
+            bodyText.includes(
+                'メールアドレスまたはパスワード'
+            )
+        ) {
+
+            console.log(
+                '❌ XServer 返回登录错误'
+            );
+
+            return {
+                success: false,
+                reason: 'LOGIN_FAILED'
+            };
+        }
+
+        // ----------------------------------------------
+        // URL 已离开 login
+        // ----------------------------------------------
+
+        if (
+            !currentUrl.includes(
+                '/login/'
+            )
+        ) {
+
+            await page.waitForTimeout(
+                2000
+            );
+
+            const gameLink2 =
+                page.getByRole(
+                    'link',
+                    {
+                        name:
+                            'ゲーム管理',
+                        exact: true
+                    }
+                );
+
+            if (
+                await gameLink2.count() > 0
+            ) {
+
+                try {
+
+                    if (
+                        await gameLink2.isVisible()
+                    ) {
+
+                        return {
+                            success: true
+                        };
+                    }
+
+                } catch (_) {}
+            }
+        }
+
+        await page.waitForTimeout(
+            2000
+        );
+    }
+
+    return {
+        success: false,
+        reason: 'LOGIN_TIMEOUT'
+    };
+}
+
+// ============================================================
+// 续期
+// ============================================================
+
+async function renewXServer(
+    page,
+    username
+) {
+
+    // --------------------------------------------------------
+    // 游戏管理
+    // --------------------------------------------------------
+
+    console.log(
+        '🎮 进入「ゲーム管理」...'
+    );
+
+    const gameManagement =
+        page.getByRole(
+            'link',
+            {
+                name:
+                    'ゲーム管理',
+                exact: true
+            }
+        );
+
+    await gameManagement.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    await gameManagement.click();
+
+    await page.waitForLoadState(
+        'domcontentloaded',
+        {
+            timeout: DEFAULT_TIMEOUT
+        }
+    ).catch(() => {});
+
+    await page.waitForTimeout(
+        1500
+    );
+
+    // --------------------------------------------------------
+    // 升级 / 延长
+    // --------------------------------------------------------
+
+    console.log(
+        '📅 进入「アップグレード・期限延長」...'
+    );
+
+    const upgradeLink =
+        page.getByRole(
+            'link',
+            {
+                name:
+                    'アップグレード・期限延長',
+                exact: true
+            }
+        );
+
+    await upgradeLink.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    await upgradeLink.click();
+
+    await page.waitForLoadState(
+        'domcontentloaded',
+        {
+            timeout: DEFAULT_TIMEOUT
+        }
+    ).catch(() => {});
+
+    await page.waitForTimeout(
+        1500
+    );
+
+    // --------------------------------------------------------
+    // 查找续期
+    // --------------------------------------------------------
+
+    const extendLink =
+        page.getByRole(
+            'link',
+            {
+                name:
+                    '期限を延長する',
+                exact: true
+            }
+        );
+
+    let available = false;
+
+    try {
+
+        await extendLink.waitFor({
+            state: 'visible',
+            timeout: 10000
+        });
+
+        available = true;
+
+    } catch (_) {
+
+        available = false;
+    }
+
+    // --------------------------------------------------------
+    // 尚未到续期时间
+    // --------------------------------------------------------
+
+    if (!available) {
+
+        const bodyText =
+            await page.locator('body')
+                .innerText()
+                .catch(() => '');
+
+        const match =
+            bodyText.match(
+                /更新をご希望の場合は、(.+?)以降にお試しください。/
+            );
+
+        if (
+            match &&
+            match[1]
+        ) {
+
+            return {
+                success: false,
+                notYet: true,
+                availableTime: match[1]
+            };
+        }
+
+        return {
+            success: false,
+            notYet: true
+        };
+    }
+
+    // --------------------------------------------------------
+    // 点击延长
+    // --------------------------------------------------------
+
+    console.log(
+        '📅 已到续期时间'
+    );
+
+    console.log(
+        '🖱️ 点击「期限を延長する」...'
+    );
+
+    await extendLink.click();
+
+    await page.waitForTimeout(
+        1000
+    );
+
+    // --------------------------------------------------------
+    // 确认
+    // --------------------------------------------------------
+
+    const confirmButton =
+        page.getByRole(
+            'button',
+            {
+                name:
+                    '確認画面に進む',
+                exact: true
+            }
+        );
+
+    await confirmButton.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    console.log(
+        '🖱️ 点击「確認画面に進む」...'
+    );
+
+    await confirmButton.click();
+
+    await page.waitForTimeout(
+        1500
+    );
+
+    // --------------------------------------------------------
+    // 最终续期
+    // --------------------------------------------------------
+
+    const finalButton =
+        page.getByRole(
+            'button',
+            {
+                name:
+                    '期限を延長する',
+                exact: true
+            }
+        );
+
+    await finalButton.waitFor({
+        state: 'visible',
+        timeout: DEFAULT_TIMEOUT
+    });
+
+    console.log(
+        '🖱️ 点击最终「期限を延長する」...'
+    );
+
+    await finalButton.click();
+
+    console.log(
+        '✅ 最终续期按钮已点击'
+    );
+
+    await page.waitForTimeout(
+        3000
+    );
+
+    // --------------------------------------------------------
+    // 检查结果
+    // --------------------------------------------------------
+
+    const bodyText =
+        await page.locator('body')
+            .innerText()
+            .catch(() => '');
+
+    const successKeywords = [
+        '延長しました',
+        '延長されました',
+        '期限を延長しました',
+        '更新しました',
+        '完了しました'
+    ];
+
+    const success =
+        successKeywords.some(
+            keyword =>
+                bodyText.includes(keyword)
+        );
+
+    return {
+        success: true,
+        confirmed: success
+    };
+}
+
+// ============================================================
 // 主程序
-// ==============================
+// ============================================================
+
 (async () => {
 
     console.log('');
-    console.log('======================================');
-    console.log('🇯🇵 XServer 自动续期程序');
-    console.log('======================================');
-    console.log(`🕐 上海时间: ${getShanghaiTime()}`);
+    console.log(
+        '======================================'
+    );
+    console.log(
+        '🇯🇵 XServer 自动续期程序'
+    );
+    console.log(
+        '======================================'
+    );
+
+    console.log(
+        `🕐 上海时间: ${getShanghaiTime()}`
+    );
+
     console.log('');
 
-    // ==========================
-    // 读取账户
-    // ==========================
-    const users = loadAccounts();
+    // ========================================================
+    // Accounts
+    // ========================================================
+
+    const users =
+        loadAccounts();
 
     if (!users.length) {
-        console.error('❌ 没有找到任何账户。');
+
+        console.error(
+            '❌ 没有配置任何账户'
+        );
+
         process.exit(1);
     }
 
@@ -263,14 +1096,16 @@ function loadAccounts() {
         `👥 共发现 ${users.length} 个账户`
     );
 
-    // ==========================
-    // Playwright 启动配置
-    // ==========================
+    // ========================================================
+    // Browser
+    // ========================================================
+
     const launchOptions = {
+
         headless: true,
+
         channel: 'chrome',
 
-        // 避免部分 CI 环境资源问题
         args: [
             '--disable-dev-shm-usage',
             '--no-sandbox',
@@ -278,13 +1113,18 @@ function loadAccounts() {
         ]
     };
 
-    // ==========================
-    // 浏览器代理
-    // ==========================
-    if (IS_PROXY && PROXY_SERVER) {
+    // ========================================================
+    // Proxy
+    // ========================================================
+
+    if (
+        IS_PROXY &&
+        PROXY_SERVER
+    ) {
 
         launchOptions.proxy = {
-            server: PROXY_SERVER
+            server:
+                PROXY_SERVER
         };
 
         console.log(
@@ -298,16 +1138,18 @@ function loadAccounts() {
         );
     }
 
-    // ==========================
-    // 启动浏览器
-    // ==========================
+    // ========================================================
+    // 启动 Chrome
+    // ========================================================
+
     let browser;
 
     try {
 
-        browser = await chromium.launch(
-            launchOptions
-        );
+        browser =
+            await chromium.launch(
+                launchOptions
+            );
 
         console.log(
             '✅ Chrome 浏览器启动成功'
@@ -316,30 +1158,33 @@ function loadAccounts() {
     } catch (error) {
 
         console.error(
-            '❌ 浏览器启动失败:',
+            '❌ Chrome 启动失败:',
             error
         );
 
         process.exit(1);
     }
 
-    // ==========================
-    // 获取出口 IP
-    // ==========================
+    // ========================================================
+    // 出口 IP
+    // ========================================================
+
     try {
 
         console.log(
             '🌐 正在检测当前出口 IP...'
         );
 
-        const ipRes = await fetch(
-            'https://api.ip.sb/ip'
-        );
+        const response =
+            await fetch(
+                'https://api.ip.sb/ip'
+            );
 
-        if (ipRes.ok) {
+        if (response.ok) {
 
             const ip =
-                (await ipRes.text()).trim();
+                (await response.text())
+                    .trim();
 
             console.log(
                 `📍 当前出口IP: ${ip}${IS_PROXY ? ' (代理)' : ' (直连)'}`
@@ -347,341 +1192,145 @@ function loadAccounts() {
 
         } else {
 
-            console.warn(
-                `⚠️ 获取出口 IP 失败: HTTP ${ipRes.status}`
+            console.log(
+                `⚠️ IP 检测失败: HTTP ${response.status}`
             );
         }
 
     } catch (error) {
 
-        console.warn(
-            `⚠️ 获取出口 IP 出错: ${error.message}`
+        console.log(
+            `⚠️ IP 检测异常: ${error.message}`
         );
     }
 
-    // ==========================
-    // 逐个处理账户
-    // ==========================
-    for (const user of users) {
+    // ========================================================
+    // 逐个账户
+    // ========================================================
+
+    for (
+        const user of users
+    ) {
 
         console.log('');
-        console.log('======================================');
+        console.log(
+            '======================================'
+        );
+
         console.log(
             `👤 正在处理用户: ${user.username}`
         );
-        console.log('======================================');
 
-        let context;
-        let page;
+        console.log(
+            '======================================'
+        );
+
+        let context = null;
+        let page = null;
 
         try {
 
-            // ==========================
-            // 参数检查
-            // ==========================
-            if (!user.username || !user.password) {
+            // --------------------------------------------------
+            // 检查账号
+            // --------------------------------------------------
+
+            if (
+                !user.username ||
+                !user.password
+            ) {
 
                 throw new Error(
-                    '账户 username 或 password 为空'
+                    'username 或 password 为空'
                 );
             }
 
-            // ==========================
-            // 创建独立浏览器环境
-            // ==========================
-            context = await browser.newContext({
-                viewport: {
-                    width: 1366,
-                    height: 768
-                },
+            // --------------------------------------------------
+            // Context
+            // --------------------------------------------------
 
-                locale: 'ja-JP',
+            context =
+                await browser.newContext({
 
-                timezoneId:
-                    'Asia/Tokyo'
-            });
+                    viewport: {
+                        width: 1366,
+                        height: 768
+                    },
 
-            page = await context.newPage();
+                    locale: 'ja-JP',
 
-            // 默认超时
+                    timezoneId:
+                        'Asia/Tokyo'
+                });
+
+            page =
+                await context.newPage();
+
             page.setDefaultTimeout(
                 DEFAULT_TIMEOUT
             );
 
             page.setDefaultNavigationTimeout(
-                LOGIN_TIMEOUT
+                NAVIGATION_TIMEOUT
             );
 
-            // ==========================
-            // 监听页面错误
-            // ==========================
-            page.on('pageerror', error => {
-                console.warn(
-                    `⚠️ 页面 JS 错误: ${error.message}`
+            // --------------------------------------------------
+            // 登录
+            // --------------------------------------------------
+
+            const loginResult =
+                await loginXServer(
+                    page,
+                    user.username,
+                    user.password
                 );
-            });
 
-            // ==========================
-            // 监听页面崩溃
-            // ==========================
-            page.on('crash', () => {
-                console.error(
-                    '❌ 页面发生崩溃'
-                );
-            });
-
-            // ==================================================
-            // 1. 打开 XServer 登录页面
-            // ==================================================
-            console.log(
-                '🌐 访问 XServer 登录页面...'
-            );
-
-            await page.goto(
-                'https://secure.xserver.ne.jp/xapanel/login/xmgame',
-                {
-                    waitUntil: 'domcontentloaded',
-                    timeout: LOGIN_TIMEOUT
-                }
-            );
-
-            console.log(
-                `🔗 登录页面: ${page.url()}`
-            );
-
-            console.log(
-                `📄 页面标题: ${await page.title()}`
-            );
-
-            // ==================================================
-            // 2. 等待用户名输入框
-            // ==================================================
-            console.log(
-                '⏳ 等待登录表单...'
-            );
-
-            const usernameInput =
-                page.getByRole('textbox', {
-                    name:
-                        'XServerアカウントID または メールアドレス',
-                    exact: true
-                });
-
-            await usernameInput.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            // ==================================================
-            // 3. 填写用户名
-            // ==================================================
-            console.log(
-                '🔑 填写账号...'
-            );
-
-            await usernameInput.fill(
-                user.username
-            );
-
-            // ==================================================
-            // 4. 填写密码
-            // ==================================================
-            await page.locator(
-                '#user_password'
-            ).waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            await page.locator(
-                '#user_password'
-            ).fill(user.password);
-
-            console.log(
-                '✅ 账号密码填写完成'
-            );
-
-            // ==================================================
-            // 5. 查找真正的登录按钮
-            //
-            // 重要：
-            // 不再使用：
-            //
-            // getByRole('button', { name: 'ログインする' })
-            //
-            // 因为它会同时匹配 Google 登录按钮。
-            //
-            // 使用 XServer 明确的 #login-submit
-            // ==================================================
-            const loginButton =
-                page.locator('#login-submit');
-
-            await loginButton.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            console.log(
-                '🖱️ 点击 XServer 登录按钮...'
-            );
-
-            await loginButton.click();
-
-            console.log(
-                '✅ 登录按钮已点击'
-            );
-
-            // ==================================================
-            // 6. 等待 Cloudflare / Turnstile / 登录处理
-            // ==================================================
-            console.log(
-                '⏳ 等待登录验证...'
-            );
-
-            await page.waitForTimeout(3000);
-
-            // ==================================================
-            // 检查 Turnstile iframe
-            // ==================================================
-            const turnstileFrame =
-                page.locator(
-                    'iframe[src*="challenges.cloudflare.com"]'
-                );
+            // --------------------------------------------------
+            // 登录失败
+            // --------------------------------------------------
 
             if (
-                await turnstileFrame.count() > 0
+                !loginResult.success
             ) {
-
-                console.log(
-                    '🛡️ 检测到 Cloudflare Turnstile'
-                );
-
-                console.log(
-                    '⏳ 等待验证结果...'
-                );
-
-                // 不操作 Turnstile，只等待登录页面状态改变
-                await page.waitForTimeout(
-                    10000
-                );
-            }
-
-            // ==================================================
-            // 7. 等待登录完成
-            // ==================================================
-            console.log(
-                '⏳ 检查 XServer 登录状态...'
-            );
-
-            let loginSuccess = false;
-
-            // 最长等待 60 秒
-            for (
-                let i = 0;
-                i < 30;
-                i++
-            ) {
-
-                const currentUrl =
-                    page.url();
-
-                // 如果出现游戏管理
-                const gameLink =
-                    page.getByRole('link', {
-                        name: 'ゲーム管理',
-                        exact: true
-                    });
-
-                if (
-                    await gameLink.count() > 0
-                ) {
-
-                    try {
-
-                        if (
-                            await gameLink.isVisible()
-                        ) {
-
-                            loginSuccess = true;
-
-                            console.log(
-                                '✅ 检测到「ゲーム管理」'
-                            );
-
-                            break;
-                        }
-
-                    } catch (_) {}
-                }
-
-                // 如果已经离开 login 页面
-                if (
-                    !currentUrl.includes('/login/')
-                ) {
-
-                    console.log(
-                        `✅ 已离开登录页面: ${currentUrl}`
-                    );
-
-                    // 再给页面一点加载时间
-                    await page.waitForTimeout(
-                        2000
-                    );
-
-                    // 再确认游戏管理
-                    if (
-                        await gameLink.count() > 0
-                    ) {
-
-                        try {
-
-                            if (
-                                await gameLink.isVisible()
-                            ) {
-
-                                loginSuccess = true;
-                                break;
-
-                            }
-
-                        } catch (_) {}
-                    }
-                }
-
-                await page.waitForTimeout(
-                    2000
-                );
-            }
-
-            // ==================================================
-            // 8. 登录失败
-            // ==================================================
-            if (!loginSuccess) {
 
                 const info =
-                    await getPageInfo(page);
+                    await getPageInfo(
+                        page
+                    );
+
+                let reasonText =
+                    '未知原因';
+
+                if (
+                    loginResult.reason ===
+                    'TURNSTILE_REQUIRED'
+                ) {
+
+                    reasonText =
+                        'Cloudflare Turnstile 未完成';
+
+                } else if (
+                    loginResult.reason ===
+                    'LOGIN_FAILED'
+                ) {
+
+                    reasonText =
+                        'XServer 登录失败';
+
+                } else if (
+                    loginResult.reason ===
+                    'LOGIN_TIMEOUT'
+                ) {
+
+                    reasonText =
+                        '登录超时';
+                }
 
                 console.error(
-                    '❌ 登录没有成功'
+                    `❌ 登录失败: ${reasonText}`
                 );
 
                 console.error(
-                    `🔗 URL: ${info.url}`
-                );
-
-                console.error(
-                    `📄 标题: ${info.title}`
-                );
-
-                console.error(
-                    '📋 页面内容:'
-                );
-
-                console.error(
-                    info.bodyText.substring(
-                        0,
-                        3000
-                    )
+                    `🔗 ${info.url}`
                 );
 
                 const screenshotPath =
@@ -691,7 +1340,7 @@ function loadAccounts() {
                         user.username
                     );
 
-                const loginFailMsg =
+                const message =
                     `🇯🇵 XServer 续期通知
 
 ❌ 登录失败
@@ -699,149 +1348,54 @@ function loadAccounts() {
 👤 账户：
 ${user.username}
 
+❌ 原因：
+${reasonText}
+
 🔗 当前页面：
 ${info.url}
 
 📄 页面标题：
 ${info.title}
 
-🛡️ 可能原因：
-• Cloudflare Turnstile 未完成
-• 登录信息错误
-• XServer 登录限制
-• 页面加载超时
+⚠️ 页面提示：
+${info.bodyText.substring(0, 1000)}
 
 🕐 运行时间：
 ${getShanghaiTime()}`;
 
                 await sendTelegramNotification(
-                    loginFailMsg,
+                    message,
                     screenshotPath
                 );
 
                 continue;
             }
 
-            // ==================================================
-            // 9. 点击游戏管理
-            // ==================================================
-            console.log(
-                '🎮 进入「ゲーム管理」...'
-            );
+            // --------------------------------------------------
+            // 续期
+            // --------------------------------------------------
 
-            const gameManagement =
-                page.getByRole('link', {
-                    name: 'ゲーム管理',
-                    exact: true
-                });
-
-            await gameManagement.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            await gameManagement.click();
-
-            await page.waitForLoadState(
-                'domcontentloaded',
-                {
-                    timeout: 30000
-                }
-            ).catch(() => {});
-
-            console.log(
-                `✅ 游戏管理页面: ${page.url()}`
-            );
-
-            await page.waitForTimeout(2000);
-
-            // ==================================================
-            // 10. 进入「升级・期限延长」
-            // ==================================================
-            console.log(
-                '📅 查找「アップグレード・期限延長」...'
-            );
-
-            const upgradeLink =
-                page.getByRole('link', {
-                    name:
-                        'アップグレード・期限延長',
-                    exact: true
-                });
-
-            await upgradeLink.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            await upgradeLink.click();
-
-            await page.waitForLoadState(
-                'domcontentloaded',
-                {
-                    timeout: 30000
-                }
-            ).catch(() => {});
-
-            console.log(
-                `✅ 已进入期限延长页面: ${page.url()}`
-            );
-
-            await page.waitForTimeout(2000);
-
-            // ==================================================
-            // 11. 检查「期限を延長する」
-            // ==================================================
-            const extendLink =
-                page.getByRole('link', {
-                    name: '期限を延長する',
-                    exact: true
-                });
-
-            let extendAvailable = false;
-
-            try {
-
-                await extendLink.waitFor({
-                    state: 'visible',
-                    timeout: 10000
-                });
-
-                extendAvailable = true;
-
-            } catch (_) {
-
-                extendAvailable = false;
-            }
-
-            // ==================================================
-            // 12. 尚未到续期时间
-            // ==================================================
-            if (!extendAvailable) {
-
-                const bodyText =
-                    await page.locator('body')
-                        .innerText()
-                        .catch(() => '');
-
-                console.log(
-                    '⚠️ 当前没有找到「期限を延長する」'
+            const renewResult =
+                await renewXServer(
+                    page,
+                    user.username
                 );
 
-                // XServer 原页面提示
-                const match =
-                    bodyText.match(
-                        /更新をご希望の場合は、(.+?)以降にお試しください。/
-                    );
+            // --------------------------------------------------
+            // 尚未到续期时间
+            // --------------------------------------------------
 
-                let msg;
+            if (
+                renewResult.notYet
+            ) {
+
+                let message;
 
                 if (
-                    match &&
-                    match[1]
+                    renewResult.availableTime
                 ) {
 
-                    msg =
+                    message =
                         `🇯🇵 XServer 续期通知
 
 ⚠️ 尚未到续期时间
@@ -850,17 +1404,17 @@ ${getShanghaiTime()}`;
 ${user.username}
 
 📅 可续期时间：
-${match[1]}
+${renewResult.availableTime}
 
 🕐 运行时间：
 ${getShanghaiTime()}`;
 
                 } else {
 
-                    msg =
+                    message =
                         `🇯🇵 XServer 续期通知
 
-⚠️ 未找到「期限を延長する」按钮
+⚠️ 当前无法续期
 
 👤 账户：
 ${user.username}
@@ -868,13 +1422,15 @@ ${user.username}
 可能原因：
 • 尚未到续期时间
 • 当前服务不支持续期
-• XServer 页面发生变化
+• XServer 页面结构发生变化
 
 🕐 运行时间：
 ${getShanghaiTime()}`;
                 }
 
-                console.log(msg);
+                console.log(
+                    message
+                );
 
                 const screenshotPath =
                     await saveScreenshot(
@@ -884,146 +1440,37 @@ ${getShanghaiTime()}`;
                     );
 
                 await sendTelegramNotification(
-                    msg,
+                    message,
                     screenshotPath
                 );
 
                 continue;
             }
 
-            // ==================================================
-            // 13. 点击「期限を延長する」
-            // ==================================================
-            console.log(
-                '📅 已到续期时间'
-            );
+            // --------------------------------------------------
+            // 续期成功
+            // --------------------------------------------------
 
-            console.log(
-                '🖱️ 点击「期限を延長する」...'
-            );
-
-            await extendLink.click();
-
-            await page.waitForTimeout(1500);
-
-            // ==================================================
-            // 14. 点击确认画面
-            // ==================================================
-            const confirmButton =
-                page.getByRole('button', {
-                    name:
-                        '確認画面に進む',
-                    exact: true
-                });
-
-            await confirmButton.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            console.log(
-                '🖱️ 点击「確認画面に進む」...'
-            );
-
-            await confirmButton.click();
-
-            await page.waitForTimeout(1500);
-
-            // ==================================================
-            // 15. 最终确认续期
-            // ==================================================
-            const finalExtendButton =
-                page.getByRole('button', {
-                    name:
-                        '期限を延長する',
-                    exact: true
-                });
-
-            await finalExtendButton.waitFor({
-                state: 'visible',
-                timeout: 30000
-            });
-
-            console.log(
-                `🖱️ 正在执行用户 ${user.username} 的最终续期...`
-            );
-
-            await finalExtendButton.click();
-
-            console.log(
-                '✅ 已点击最终续期按钮'
-            );
-
-            await page.waitForTimeout(3000);
-
-            // ==================================================
-            // 16. 检查续期结果
-            // ==================================================
-            const resultInfo =
-                await getPageInfo(page);
-
-            console.log(
-                `📄 续期后页面: ${resultInfo.url}`
-            );
-
-            // 页面文本中寻找成功提示
-            const successKeywords = [
-                '延長しました',
-                '延長されました',
-                '期限を延長しました',
-                '更新しました',
-                '完了しました'
-            ];
-
-            const successDetected =
-                successKeywords.some(keyword =>
-                    resultInfo.bodyText.includes(
-                        keyword
-                    )
-                );
-
-            // ==================================================
-            // 17. 返回
-            // ==================================================
-            try {
-
-                const backLink =
-                    page.getByRole('link', {
-                        name: '戻る',
-                        exact: true
-                    });
-
-                if (
-                    await backLink.count() > 0 &&
-                    await backLink.isVisible()
-                ) {
-
-                    await backLink.click();
-
-                    console.log(
-                        '↩️ 已返回'
-                    );
-                }
-
-            } catch (_) {}
-
-            // ==================================================
-            // 18. 成功通知
-            // ==================================================
-            const successMsg =
+            const successMessage =
                 `🇯🇵 XServer 续期通知
 
-${successDetected ? '✅ 续期成功' : '✅ 已执行续期操作'}
+✅ 续期操作已完成
 
 👤 账户：
 ${user.username}
 
+${renewResult.confirmed
+    ? '✅ 页面已检测到完成提示'
+    : 'ℹ️ 已执行最终续期操作'}
+
 🕐 运行时间：
 ${getShanghaiTime()}`;
 
-            console.log(successMsg);
+            console.log(
+                successMessage
+            );
 
-            const successPath =
+            const screenshotPath =
                 await saveScreenshot(
                     page,
                     'success',
@@ -1031,22 +1478,25 @@ ${getShanghaiTime()}`;
                 );
 
             await sendTelegramNotification(
-                successMsg,
-                successPath
+                successMessage,
+                screenshotPath
             );
 
         } catch (error) {
 
-            // ==================================================
-            // 错误处理
-            // ==================================================
+            // --------------------------------------------------
+            // 异常
+            // --------------------------------------------------
+
             console.error('');
             console.error(
                 '======================================'
             );
+
             console.error(
-                '❌ XServer 操作失败'
+                '❌ XServer 操作异常'
             );
+
             console.error(
                 '======================================'
             );
@@ -1055,55 +1505,51 @@ ${getShanghaiTime()}`;
                 error
             );
 
-            let currentUrl = '';
+            let currentUrl =
+                '未知';
 
             try {
-                currentUrl = page
-                    ? page.url()
-                    : '';
+
+                if (page) {
+                    currentUrl =
+                        page.url();
+                }
+
             } catch (_) {}
 
-            const errorMsg =
+            const screenshotPath =
+                page
+                    ? await saveScreenshot(
+                        page,
+                        'error',
+                        user.username
+                    )
+                    : null;
+
+            const errorMessage =
                 `❌ XServer 续期通知
 
-❌ 续期失败
+❌ 操作失败
 
 👤 账户：
 ${user.username}
 
-❌ 错误信息：
+❌ 错误：
 ${error.message || error}
 
 🔗 当前页面：
-${currentUrl || '未知'}
+${currentUrl}
 
 🕐 运行时间：
 ${getShanghaiTime()}`;
 
-            console.error(errorMsg);
-
-            let errorPath = null;
-
-            if (page) {
-
-                errorPath =
-                    await saveScreenshot(
-                        page,
-                        'error',
-                        user.username
-                    );
-            }
-
             await sendTelegramNotification(
-                errorMsg,
-                errorPath
+                errorMessage,
+                screenshotPath
             );
 
         } finally {
 
-            // ==========================
-            // 关闭当前账户 context
-            // ==========================
             try {
 
                 if (context) {
@@ -1114,24 +1560,25 @@ ${getShanghaiTime()}`;
         }
     }
 
-    // ==============================
-    // 关闭浏览器
-    // ==============================
+    // ========================================================
+    // 完成
+    // ========================================================
+
     try {
 
         await browser.close();
 
-        console.log('');
-        console.log(
-            '======================================'
-        );
-        console.log(
-            '✅ 所有账户处理完成'
-        );
-        console.log(
-            '======================================'
-        );
-
     } catch (_) {}
+
+    console.log('');
+    console.log(
+        '======================================'
+    );
+    console.log(
+        '✅ 所有账户处理完成'
+    );
+    console.log(
+        '======================================'
+    );
 
 })();
