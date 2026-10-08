@@ -321,13 +321,11 @@ async function waitForLoginSuccess(page, timeout = 60000) {
         console.log(`\n👤 正在处理用户: ${user.username}`);
         console.log('═'.repeat(60));
         
-        const context = await browser.newContext();
+        // ✨ 在创建 context 时设置 User-Agent（正确的方式）
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        });
         const page = await context.newPage();
-
-        // 设置真实 User-Agent
-        await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        );
 
         try {
             // ========== 第1步：加载登录页面 ==========
