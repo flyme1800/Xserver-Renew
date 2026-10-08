@@ -90,98 +90,144 @@ async function sendTelegramNotification(message, imagePath = null) {
     }
 }
 
-/**
- * 🔐 处理 Cloudflare Turnstile：真实点击 iframe 内 checkbox，并等待 token 生成
- */
-async function ensureTurnstileReady(page, timeout = 60000) {
-    console.log('🔐 [Turnstile] 等待并点击 Turnstile 复选框...');
-    const startedAt = Date.now();
+async function tryClickTurnstile(page) {
+    console.log('🔐 [Turnstile] 尝试真实点击 Cloudflare 验证控件...');
 
+    const selectors = [
+        '[data-sitekey]',
+        '.cf-turnstile',
+        '[class*="turnstile"]',
+        'input[type="checkbox"]',
+        '[role="checkbox"]',
+        '.cf-checkbox'
+    ];
+
+    for (const selector of selectors) {
+        try {
+            const locator = page.locator(selector).first();
+            await locator.waitFor({ state: 'visible', timeout: 5000 });
+            await locator.click({ force: true, timeout: 5000 });
+            console.log(`✅ [Turnstile] 已点击页面元素: ${selector}`);
+            return true;
+        } catch (e) {
+            // continue
+        }
+    }
+
+    // fallback: DOM-level click via JS, useful for hidden or shadow-dominated widgets
     try {
-        // 1) 等待线程 iframe 出现
-        await page.waitForSelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]', {
-            timeout: 20000
-        }).catch(() => console.log('ℹ️ [Turnstile] iframe 未出现，继续检查现有页面'));
-
-        // 2) 获取 Cloudflare iframe
-        const frame = page.frames().find(f => /challenges\.cloudflare\.com|turnstile/i.test(f.url()));
-
-        if (frame) {
-            console.log('✅ [Turnstile] 找到 Cloudflare iframe');
-
-            const retryClick = async () => {
-                const selectors = [
-                    'input[type="checkbox"]',
-                    '.cf-turnstile',
-                    'label',
-                    '[role="checkbox"]'
-                ];
-
-                for (const selector of selectors) {
-                    const candidate = frame.locator(selector).first();
-                    try {
-                        await candidate.waitFor({ state: 'visible', timeout: 5000 });
-                        await candidate.click({ force: true, timeout: 5000 });
-                        console.log(`✅ [Turnstile] 已点击 iframe 中的元素: ${selector}`);
-                        return true;
-                    } catch (e) {
-                        // continue
-                    }
-                }
-                return false;
-            };
-
-            const clicked = await retryClick();
-            if (!clicked) {
-                console.warn('⚠️ [Turnstile] iframe 内复选框未点击成功');
-            }
-        } else {
-            // 3) fallback: 直接在页面中寻找 checkbox / data-sitekey
-            const pageSelectors = [
+        const clicked = await page.evaluate(() => {
+            const selectors = [
+                '.cf-turnstile',
                 '[data-sitekey]',
+                '[class*="turnstile"]',
                 'input[type="checkbox"]',
-                '.cf-checkbox',
-                '[role="checkbox"]'
+                '[role="checkbox"]',
+                '.cf-checkbox'
             ];
 
-            let pageChecked = false;
-            for (const selector of pageSelectors) {
+            const doClick = (node) => {
+                if (!node) return false;
+                const events = ['mousedown', 'mouseup', 'click'];
+                for (const eventName of events) {
+                    node.dispatchEvent(new MouseEvent(eventName, {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window
+                    }));
+                }
+                return true;
+            };
+
+            for (const selector of selectors) {
+                const element = document.querySelector(selector);
+                if (element) {
+                    return doClick(element);
+                }
+            }
+
+            return false;
+        });
+
+        if (clicked) {
+            console.log('✅ [Turnstile] 已通过页面 DOM 事件触发点击');
+            return true;
+        }
+    } catch (e) {
+        console.warn(`⚠️ [Turnstile] JS click fallback 失败: ${e.message}`);
+    }
+
+    // fallback: click iframe container itself
+    try {
+        const frame = page.frames().find(f => /challenges\.cloudflare\.com|turnstile/i.test(f.url()));
+        if (frame) {
+            const candidates = ['input[type="checkbox"]', '.cf-turnstile', '[role="checkbox"]', 'label'];
+            for (const selector of candidates) {
                 try {
-                    const candidate = page.locator(selector).first();
-                    await candidate.waitFor({ state: 'visible', timeout: 5000 });
-                    await candidate.click({ force: true, timeout: 5000 });
-                    console.log(`✅ [Turnstile] 已点击页面中的元素: ${selector}`);
-                    pageChecked = true;
-                    break;
+                    await frame.locator(selector).first().click({ force: true, timeout: 5000 });
+                    console.log(`✅ [Turnstile] 已点击 iframe 内元素: ${selector}`);
+                    return true;
                 } catch (e) {
                     // continue
                 }
             }
-
-            if (!pageChecked) {
-                console.warn('⚠️ [Turnstile] 页面中未发现可点击控件');
-            }
         }
+    } catch (e) {
+        console.warn(`⚠️ [Turnstile] iframe fallback 失败: ${e.message}`);
+    }
 
-        // 4) 等待 token 生成；不要只看脚本加载，而要看实际返回值
-        console.log('⏳ [Turnstile] 等待返回 token / 验证完成...');
-        await page.waitForFunction(() => {
-            const field = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]');
-            return !!(field && field.value && field.value.length > 0);
-        }, { timeout: 30000 }).catch(() => {
-            console.log('ℹ️ [Turnstile] 未生成 cf-turnstile-response，继续等待 final login');
-        });
+    console.warn('⚠️ [Turnstile] 没有成功点击验证控件');
+    return false;
+}
 
-        // 5) 额外等待让 Cloudflare 完成状态切换，避免提交前太快
-        await page.waitForTimeout(1500);
+async function waitForTurnstileToken(page, timeoutMs = 30000) {
+    console.log('⏳ [Turnstile] 等待真实 token 生成...');
+    const start = Date.now();
 
-        console.log(`✅ [Turnstile] 处理完毕，耗时: ${Date.now() - startedAt}ms`);
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const result = await page.evaluate(() => {
+                const hidden = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]');
+                return hidden ? hidden.value : '';
+            });
+
+            if (result && result.length > 0) {
+                console.log('✅ [Turnstile] 已生成真实 response token');
+                return true;
+            }
+
+            await page.waitForTimeout(500);
+        } catch (e) {
+            await page.waitForTimeout(500);
+        }
+    }
+
+    console.warn('⚠️ [Turnstile] 在规定时间内未生成真实 token');
+    return false;
+}
+
+/**
+ * 🔐 处理 Turnstile，确保页面真正完成验证后再提交表单
+ */
+async function ensureTurnstileReady(page) {
+    console.log('🔐 [Turnstile] 初始化校验...');
+
+    const challengeFound = await page.$('iframe[src*="challenges.cloudflare.com"], [data-sitekey], .cf-turnstile, [class*="turnstile"]').catch(() => null);
+    if (!challengeFound) {
+        console.log('ℹ️ [Turnstile] 当前页面没有检测到 Cloudflare challenge');
         return true;
+    }
 
-    } catch (error) {
-        console.warn(`⚠️ [Turnstile] 处理异常: ${error.message}`);
+    await tryClickTurnstile(page);
+
+    const tokenReady = await waitForTurnstileToken(page, 25000);
+    if (!tokenReady) {
+        console.warn('⚠️ [Turnstile] token 未生成，说明 Cloudflare 验证未完成');
         return false;
     }
+
+    console.log('✅ [Turnstile] 验证已完成');
+    return true;
 }
 
 /**
@@ -206,7 +252,7 @@ async function waitForLoginSuccess(page, timeout = 60000) {
                 return false;
             }
 
-            if (bodyText.includes('エラーが発生') || bodyText.includes('ログイン失敗') || bodyText.includes('アカウント')) {
+            if (bodyText.includes('エラーが発生') || bodyText.includes('ログイン失敗')) {
                 console.warn('⚠️ 检测到登录错误提示');
                 return false;
             }
@@ -289,7 +335,10 @@ async function waitForLoginSuccess(page, timeout = 60000) {
                 timeout: 30000
             });
 
-            await ensureTurnstileReady(page, 60000);
+            const turnstileOk = await ensureTurnstileReady(page);
+            if (!turnstileOk) {
+                throw new Error('Cloudflare Turnstile 验证未完成，无法提交登录');
+            }
 
             console.log('⏳ 正在输入登录凭证...');
             const emailInput = page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' });
