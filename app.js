@@ -91,78 +91,143 @@ async function sendTelegramNotification(message, imagePath = null) {
     }
 }
 
-// ✨ 新增：处理 Cloudflare Turnstile 验证
-async function handleTurnstileVerification(page, timeout = 60000) {
-    console.log('🔐 正在处理 Cloudflare Turnstile 验证...');
+// ✨ 改进版：更激进的 Turnstile 检测和点击
+async function handleTurnstileBeforeSubmit(page, timeout = 30000) {
+    console.log('🔐 正在检测并准备 Cloudflare Turnstile 验证...');
     
     try {
-        // 1. 等待 Turnstile iframe 出现
+        // 1. 首先等待 iframe 出现
         console.log('⏳ 等待 Turnstile iframe 加载...');
-        const turnstileFrame = await page.waitForSelector('iframe[src*="challenges.cloudflare.com"]', { 
-            timeout: 10000 
-        }).catch(() => null);
-
-        if (!turnstileFrame) {
-            console.log('ℹ️ 未检测到 Turnstile iframe，可能页面无需验证或已验证');
-            return true;
+        
+        const iframeSelector = 'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]';
+        try {
+            await page.waitForSelector(iframeSelector, { timeout: 8000 });
+            console.log('✅ 检测到 Turnstile iframe');
+        } catch (e) {
+            console.log('ℹ️ 未检测到 Turnstile iframe（可能页面没有验证或已加载）');
         }
 
-        console.log('✅ 检测到 Turnstile iframe');
+        // 2. 尝试获取并点击复选框 - 多种策略
+        console.log('🖱️ 尝试定位并点击 Turnstile 复选框...');
         
-        // 2. 等待复选框出现
-        console.log('⏳ 等待 Turnstile 复选框加载...');
-        await page.waitForSelector('input[type="checkbox"][data-sitekey], .cf-checkbox', { 
-            timeout: 15000 
-        }).catch(() => null);
-
-        // 3. 点击 Turnstile 复选框 - "私はロボットではありません"
-        console.log('🖱️ 点击 Turnstile 验证复选框...');
-        
-        // 尝试多种选择器
-        const checkboxSelectors = [
-            'input[type="checkbox"]',
-            '.cf-checkbox',
-            '[data-sitekey] input',
-            'div[role="presentation"] input'
+        const clickStrategies = [
+            // 策略1: 直接找 input[type="checkbox"]
+            async () => {
+                const checkboxes = await page.$$('input[type="checkbox"]');
+                for (let checkbox of checkboxes) {
+                    const isVisible = await checkbox.isVisible();
+                    if (isVisible) {
+                        console.log('✅ 找到可见复选框，尝试点击');
+                        await checkbox.click({ force: true });
+                        return true;
+                    }
+                }
+                return false;
+            },
+            // 策略2: 通过 aria-label 查找
+            async () => {
+                const elem = await page.$('[aria-label*="robot"], [aria-label*="Turnstile"]');
+                if (elem) {
+                    console.log('✅ 通过 aria-label 找到复选框，尝试点击');
+                    await elem.click({ force: true });
+                    return true;
+                }
+                return false;
+            },
+            // 策略3: 找到包含 Cloudflare 的 iframe，然后在其中查找复选框
+            async () => {
+                const frames = page.frames();
+                for (let frame of frames) {
+                    try {
+                        const checkbox = await frame.$('input[type="checkbox"]');
+                        if (checkbox) {
+                            console.log('✅ 在 iframe 中找到复选框，尝试点击');
+                            await checkbox.click({ force: true });
+                            return true;
+                        }
+                    } catch (e) {
+                        // 跳过无法访问的 iframe（通常是跨域的 Cloudflare iframe）
+                    }
+                }
+                return false;
+            },
+            // 策略4: 通过 label 文本查找
+            async () => {
+                const label = await page.$('label:has-text("私はロボットではありません")');
+                if (label) {
+                    console.log('✅ 通过 label 文本找到，尝试点击');
+                    await label.click({ force: true });
+                    return true;
+                }
+                return false;
+            }
         ];
 
         let clicked = false;
-        for (const selector of checkboxSelectors) {
+        for (let i = 0; i < clickStrategies.length; i++) {
             try {
-                const element = await page.$(selector);
-                if (element) {
-                    await page.locator(selector).first().click({ timeout: 5000 });
-                    console.log(`✅ 已点击复选框 (选择器: ${selector})`);
-                    clicked = true;
-                    break;
-                }
+                clicked = await clickStrategies[i]();
+                if (clicked) break;
             } catch (e) {
-                console.log(`⚠️ 尝试选择器 ${selector} 失败: ${e.message}`);
+                console.log(`⚠️ 策略 ${i + 1} 失败: ${e.message}`);
             }
         }
 
         if (!clicked) {
-            console.warn('⚠️ 未能点击 Turnstile 复选框，尝试继续...');
+            console.warn('⚠️ 未能通过任何策略点击 Turnstile 复选框，继续提交');
         }
 
-        // 4. 等待验证完成（Cloudflare 处理验证）
-        console.log('⏳ 等待 Turnstile 验证完成...');
-        
-        // 检查是否有验证成功的信号
-        await page.waitForFunction(() => {
-            // 方法1: 检查 Turnstile token 是否生成
-            return window.turnstile && window.turnstile.isRendered && window.turnstile.isRendered();
-        }, { timeout: 20000 }).catch(() => {
-            console.log('ℹ️ Turnstile 验证状态检查超时，继续进行');
-        });
+        // 3. 给予 Cloudflare 处理时间
+        console.log('⏳ 等待 Cloudflare 处理验证...');
+        await page.waitForTimeout(2000);
 
-        console.log('✅ Turnstile 验证处理完成');
-        await page.waitForTimeout(1000); // 给予额外缓冲时间
+        // 4. 检查是否已验证
+        const isVerified = await page.evaluate(() => {
+            // 检查 Turnstile token 是否存在
+            return window.turnstile && typeof window.turnstile.getResponse === 'function';
+        }).catch(() => false);
+
+        if (isVerified) {
+            console.log('✅ Turnstile 验证已处理');
+        } else {
+            console.log('ℹ️ 无法确认验证状态，继续进行');
+        }
+
         return true;
 
     } catch (error) {
-        console.warn(`⚠️ Turnstile 处理异常: ${error.message}`);
+        console.warn(`⚠️ Turnstile 预处理异常: ${error.message}`);
         return false;
+    }
+}
+
+// ✨ 在登录成功后处理 Turnstile
+async function handleTurnstileAfterSubmit(page, timeout = 60000) {
+    console.log('🔐 登录后处理 Turnstile 验证...');
+    
+    const startTime = Date.now();
+    
+    try {
+        // 检查页面是否出现红色错误提示（说明验证失败）
+        while (Date.now() - startTime < timeout) {
+            // 检查是否有错误提示
+            const errorText = await page.locator('.error, [class*="error"], [class*="alert"]').innerText().catch(() => '');
+            if (errorText.includes('ゲーム') || errorText.includes('エラー')) {
+                console.warn('⚠️ 检测到错误提示，可能是 Turnstile 验证失败或账户问题');
+                break;
+            }
+
+            // 检查是否成功导航到控制面板（URL 变化）
+            if (page.url().includes('xapanel')) {
+                console.log('✅ 成功导航到 xapanel 页面');
+                break;
+            }
+
+            await page.waitForTimeout(500);
+        }
+
+    } catch (error) {
+        console.warn(`⚠️ 登录后处理异常: ${error.message}`);
     }
 }
 
@@ -190,7 +255,8 @@ async function handleTurnstileVerification(page, timeout = 60000) {
         channel: 'chrome',
         args: [
             '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage'
+            '--disable-dev-shm-usage',
+            '--disable-web-resources'
         ]
     };
 
@@ -222,6 +288,9 @@ async function handleTurnstileVerification(page, timeout = 60000) {
         const context = await browser.newContext();
         const page = await context.newPage();
 
+        // 设置 User-Agent 以规避检测
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
         try {
             // 1. 导航到登录页面
             console.log('⏳ 正在加载登录页面...');
@@ -236,26 +305,28 @@ async function handleTurnstileVerification(page, timeout = 60000) {
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).fill(user.username);
             await page.locator('#user_password').fill(user.password);
             
-            // Use an ID-based selector for the login button to avoid Playwright strict mode ambiguity
+            // ✨ 在提交前主动处理 Turnstile
+            await handleTurnstileBeforeSubmit(page, 30000);
+
+            // 3. 提交登录表单
             console.log('⏳ 正在提交登录表单...');
             await page.locator('#login-submit').click();
 
-            // ✨ 处理 Turnstile 验证
-            await handleTurnstileVerification(page, 60000);
+            // ✨ 在提交后继续监控 Turnstile
+            await handleTurnstileAfterSubmit(page, 30000);
 
             // 等待登录成功并导航到首页
             console.log('⏳ 等待登录完成，加载首页...');
             
-            // 使用 waitForURL 等待页面导航，但不等待 networkidle（容易超时）
             try {
                 await page.waitForURL(/xapanel/, { timeout: 30000 });
             } catch (e) {
-                console.warn(`⚠️ URL 等待超时，检查当前页面: ${page.url()}`);
+                console.warn(`⚠️ URL 等待超时: ${page.url()}`);
             }
             
-            // 只等待 DOM 加载完成
+            // 等待 DOM 加载
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
-                console.log('ℹ️ DOM 加载超时，继续进行');
+                console.log('ℹ️ DOM 加载超时');
             });
             
             await page.waitForTimeout(2000);
@@ -273,6 +344,12 @@ async function handleTurnstileVerification(page, timeout = 60000) {
                     break;
                 } catch (e) {
                     console.warn(`⚠️ 第 ${attempt + 1} 次尝试失败: ${e.message}`);
+                    
+                    // 保存截图以便调试
+                    const debugPath = `debug_${user.username}_attempt_${attempt + 1}.png`;
+                    await page.screenshot({ path: debugPath });
+                    console.log(`💾 调试截图已保存: ${debugPath}`);
+                    
                     if (attempt < 2) {
                         console.log('⏳ 等待后重试...');
                         await page.waitForTimeout(3000);
@@ -284,9 +361,9 @@ async function handleTurnstileVerification(page, timeout = 60000) {
                 throw new Error('无法找到 ゲーム管理 链接，已尝试3次');
             }
 
-            // 等待页面加载，但改为 domcontentloaded 而非 networkidle
+            // 等待页面加载
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
-                console.log('ℹ️ DOM 加载超时，继续进行');
+                console.log('ℹ️ DOM 加载超时');
             });
 
             // 3. 升级 / 延长
