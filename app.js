@@ -101,15 +101,6 @@ async function injectStealthScripts(page) {
         // 隐藏 chrome 属性
         window.chrome = { runtime: {} };
         
-        // 隐藏 headless 特征
-        const originalQuery = window.matchMedia;
-        window.matchMedia = function(query) {
-            if (query === '(prefers-color-scheme: dark)') {
-                return originalQuery.call(window, query);
-            }
-            return originalQuery.call(window, query);
-        };
-        
         // 伪造 plugins
         Object.defineProperty(navigator, 'plugins', {
             get: () => [1, 2, 3],
@@ -120,7 +111,7 @@ async function injectStealthScripts(page) {
             get: () => ['ja-JP', 'ja', 'en'],
         });
 
-        // 防止 Cloudflare 检测到 setTimeout 被 hook
+        // 防止检测 setTimeout hook
         const originalSetTimeout = window.setTimeout;
         window.setTimeout = function(...args) {
             return originalSetTimeout.apply(this, args);
@@ -129,10 +120,10 @@ async function injectStealthScripts(page) {
 }
 
 /**
- * 等待 Turnstile 生成 token，并进行更激进的尝试
+ * 等待 Turnstile 生成 token
  */
-async function ensureTurnstileReady(page, { timeoutMs = 90000 } = {}) {
-    console.log('🔐 [Turnstile] 初始化高级验证处理...');
+async function ensureTurnstileReady(page, { timeoutMs = 60000 } = {}) {
+    console.log('🔐 [Turnstile] 初始化验证处理...');
 
     const hasTurnstile = await page.locator('[data-sitekey], .cf-turnstile, iframe[src*="challenges.cloudflare.com"]').first().count().then(v => v > 0).catch(() => false);
     if (!hasTurnstile) {
@@ -142,47 +133,34 @@ async function ensureTurnstileReady(page, { timeoutMs = 90000 } = {}) {
 
     console.log('✅ [Turnstile] 检测到 Turnstile 挑战容器');
 
-    // 步骤1: 多轮次点击尝试
-    console.log('🖱️ [Turnstile] 执行多轮次点击和交互...');
-    for (let round = 0; round < 3; round++) {
+    // 多轮次点击尝试
+    console.log('🖱️ [Turnstile] 执行多轮点击和交互...');
+    for (let round = 0; round < 4; round++) {
         try {
-            // 尝试点击 Turnstile 容器
             await page.evaluate(() => {
                 const container = document.querySelector('[data-sitekey]') || 
                                  document.querySelector('.cf-turnstile') ||
                                  document.querySelector('[class*="turnstile"]');
                 if (container) {
-                    // 模拟真实用户交互
-                    const mousedownEvent = new MouseEvent('mousedown', {
-                        bubbles: true, 
-                        cancelable: true,
-                        view: window
-                    });
-                    const mouseupEvent = new MouseEvent('mouseup', {
-                        bubbles: true, 
-                        cancelable: true,
-                        view: window
-                    });
-                    const clickEvent = new MouseEvent('click', {
-                        bubbles: true, 
-                        cancelable: true,
-                        view: window
-                    });
-
-                    container.dispatchEvent(mousedownEvent);
-                    container.dispatchEvent(mouseupEvent);
-                    container.dispatchEvent(clickEvent);
+                    const events = ['mousedown', 'mouseup', 'click'];
+                    for (const eventName of events) {
+                        container.dispatchEvent(new MouseEvent(eventName, {
+                            bubbles: true, 
+                            cancelable: true,
+                            view: window
+                        }));
+                    }
                     return true;
                 }
                 return false;
             });
             console.log(`✅ 第 ${round + 1} 轮：已触发 Turnstile 点击事件`);
         } catch (e) {
-            console.warn(`⚠️ 第 ${round + 1} 轮点击失败: ${e.message}`);
+            console.warn(`⚠️ 第 ${round + 1} 轮点击失败`);
         }
 
         // 等待 Cloudflare 处理
-        await page.waitForTimeout(5000 + round * 2000);
+        await page.waitForTimeout(3000 + round * 1500);
 
         // 检查是否已生成 token
         const tokenGenerated = await page.evaluate(() => {
@@ -198,68 +176,19 @@ async function ensureTurnstileReady(page, { timeoutMs = 90000 } = {}) {
 
         if (tokenGenerated) {
             console.log(`✅ Token 已生成（第 ${round + 1} 轮成功）`);
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1500);
             return true;
         }
     }
 
-    // 步骤2: 尝试滚动、移动鼠标等行为
-    console.log('🖱️ [Turnstile] 执行模拟用户行为（滚动/移动）...');
-    try {
-        await page.evaluate(() => {
-            window.scrollBy(0, window.innerHeight / 2);
-        });
-        await page.waitForTimeout(2000);
-    } catch (e) {
-        console.warn(`⚠️ 滚动失败: ${e.message}`);
-    }
-
-    // 步骤3: 再次尝试点击（可能需要页面重排）
-    console.log('🖱️ [Turnstile] 重新尝试点击（第二阶段）...');
-    try {
-        const locator = page.locator('[data-sitekey]').first();
-        if (await locator.count()) {
-            const box = await locator.boundingBox();
-            if (box) {
-                await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-                await page.waitForTimeout(800);
-                await page.mouse.click();
-                console.log('✅ 已执行鼠标移动+点击');
-            }
-        }
-    } catch (e) {
-        console.warn(`⚠️ 鼠标交互失败: ${e.message}`);
-    }
-
-    await page.waitForTimeout(6000);
-
-    // 步骤4: 最后检查 token
-    const finalTokenCheck = await page.evaluate(() => {
-        const field = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]');
-        if (field && field.value && field.value.length > 20) return true;
-        
-        if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
-            const token = window.turnstile.getResponse();
-            if (token && token.length > 20) return true;
-        }
-
-        const widget = document.querySelector('[data-sitekey]');
-        return widget && widget.getAttribute('data-state') === 'solved';
-    }).catch(() => false);
-
-    if (finalTokenCheck) {
-        console.log('✅ [Turnstile] 最终检查：Token 已生成');
-        return true;
-    }
-
-    console.warn('⚠️ [Turnstile] Token 生成失败，但继续尝试登录（可能在后续被动态验证）');
+    console.warn('⚠️ [Turnstile] Token 生成未确认，但继续尝试提交');
     return true;
 }
 
 /**
  * 等待登录成功
  */
-async function waitForLoginSuccess(page, timeout = 90000) {
+async function waitForLoginSuccess(page, timeout = 60000) {
     console.log('⏳ 等待登录成功...');
     const startTime = Date.now();
 
@@ -274,7 +203,7 @@ async function waitForLoginSuccess(page, timeout = 90000) {
 
             const bodyText = await page.locator('body').innerText().catch(() => '');
             
-            if (bodyText.includes('私はロボットではありません') && bodyText.includes('再度お試し')) {
+            if (bodyText.includes('私はロボットではありません')) {
                 console.warn('⚠️ 页面显示需要再次验证 Turnstile');
                 return false;
             }
@@ -292,6 +221,34 @@ async function waitForLoginSuccess(page, timeout = 90000) {
 
     console.error('❌ 登录等待超时');
     return false;
+}
+
+/**
+ * 加载登录页面（带重试）
+ */
+async function loadLoginPage(page, maxRetries = 2) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const startTime = Date.now();
+            console.log(`⏳ 正在加载登录页面... (尝试 ${attempt + 1}/${maxRetries + 1})`);
+            
+            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', {
+                waitUntil: 'domcontentloaded',
+                timeout: 25000
+            });
+            
+            const loadTime = Date.now() - startTime;
+            console.log(`✅ 登录页面加载成功 (耗时: ${loadTime}ms)`);
+            return true;
+        } catch (error) {
+            console.warn(`⚠️ 第 ${attempt + 1} 次加载失败: ${error.message}`);
+            if (attempt < maxRetries) {
+                await page.waitForTimeout(3000);
+            }
+        }
+    }
+    
+    throw new Error('登录页面加载失败，已尝试 ' + (maxRetries + 1) + ' 次');
 }
 
 // 续期流程
@@ -321,14 +278,10 @@ async function waitForLoginSuccess(page, timeout = 90000) {
             '--disable-dev-shm-usage',
             '--enable-automation=false',
             '--disable-features=IsolateOrigins,site-per-process',
-            '--disable-web-resources',
             '--disable-extensions',
             '--disable-default-apps',
-            '--disable-preconnect',
             '--disable-sync',
-            '--disable-translate',
-            '--disable-background-networking',
-            '--disable-background-timer-throttling'
+            '--disable-translate'
         ]
     };
 
@@ -371,33 +324,33 @@ async function waitForLoginSuccess(page, timeout = 90000) {
         await injectStealthScripts(page);
 
         try {
-            console.log('⏳ 正在加载登录页面...');
-            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', {
-                waitUntil: 'networkidle',
-                timeout: 45000
-            });
+            // 加载登录页面（带重试）
+            await loadLoginPage(page, 2);
 
-            // 初次 Turnstile 处理
-            await ensureTurnstileReady(page, { timeoutMs: 90000 });
+            // 处理 Turnstile
+            await ensureTurnstileReady(page);
 
             console.log('⏳ 正在输入登录凭证...');
             
-            // 增加输入延迟，模拟真实用户
+            // 输入邮箱
             const emailInput = page.getByRole('textbox', { name: /XServer|メール/ }).first();
             await emailInput.click();
+            await emailInput.fill('');
             for (const char of user.username) {
-                await page.keyboard.type(char, { delay: 50 });
+                await page.keyboard.type(char, { delay: 40 });
             }
 
+            // 输入密码
             const passwordInput = page.locator('#user_password, input[type="password"]').first();
             await passwordInput.click();
+            await passwordInput.fill('');
             for (const char of user.password) {
-                await page.keyboard.type(char, { delay: 40 });
+                await page.keyboard.type(char, { delay: 35 });
             }
 
             // 提交前再检查一次 Turnstile
             console.log('⏳ 提交前再次检查 Turnstile...');
-            await ensureTurnstileReady(page, { timeoutMs: 30000 });
+            await ensureTurnstileReady(page);
 
             console.log('⏳ 正在提交登录表单...');
             await page.locator('button:has-text("ログイン"), button[type="submit"], #login-submit').first().click();
@@ -408,15 +361,15 @@ async function waitForLoginSuccess(page, timeout = 90000) {
             }
 
             console.log('⏳ 等待页面完全加载...');
-            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(3000);
+            await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(2000);
 
             console.log('⏳ 正在查找并点击 ゲーム管理 链接...');
             let gameManagementFound = false;
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
                     const gameLink = page.getByRole('link', { name: 'ゲーム管理' }).first();
-                    await gameLink.waitFor({ state: 'visible', timeout: 15000 });
+                    await gameLink.waitFor({ state: 'visible', timeout: 10000 });
                     console.log(`✅ 第 ${attempt + 1} 次尝试：找到 ゲーム管理 链接`);
                     await gameLink.click();
                     gameManagementFound = true;
@@ -436,7 +389,7 @@ async function waitForLoginSuccess(page, timeout = 90000) {
                 throw new Error('无法找到 ゲーム管理 链接，已尝试3次');
             }
 
-            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+            await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
 
             console.log('⏳ 正在查找 アップグレード・期限延長 链接...');
             await page.getByRole('link', { name: 'アップグレード・期限延長' }).first().click();
@@ -484,7 +437,7 @@ async function waitForLoginSuccess(page, timeout = 90000) {
             console.log('═'.repeat(60));
 
             const errorPath = `error_${user.username}.png`;
-            await page.screenshot({ path: errorPath, fullPage: true });
+            await page.screenshot({ path: errorPath, fullPage: true }).catch(() => {});
             await sendTelegramNotification(errorMsg, errorPath);
 
         } finally {
