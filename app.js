@@ -144,25 +144,60 @@ async function sendTelegramNotification(message, imagePath = null) {
 
         try {
             // 1. 导航到登录页面
-            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame');
+            console.log('⏳ 正在加载登录页面...');
+            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', { waitUntil: 'domcontentloaded', timeout: 30000 });
 
             // 2. 登录
+            console.log('⏳ 正在输入登录信息...');
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).click();
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).fill(user.username);
             await page.locator('#user_password').fill(user.password);
             // Use an ID-based selector for the login button to avoid Playwright strict mode ambiguity
+            console.log('⏳ 正在提交登录表单...');
             await page.locator('#login-submit').click();
 
-            // 等待导航
-            await page.getByRole('link', { name: 'ゲーム管理' }).click();
-            await page.waitForLoadState('networkidle');
+            // 等待登录成功并导航到首页
+            console.log('⏳ 等待登录完成，加载首页...');
+            await page.waitForURL(/xapanel/, { timeout: 45000 });
+            
+            // 增加额外等待时间确保页面完全加载
+            await page.waitForLoadState('networkidle', { timeout: 45000 });
+            await page.waitForTimeout(2000);
+
+            // 尝试找到并点击 "ゲーム管理" 链接，增加重试机制
+            console.log('⏳ 正在查找 ゲーム管理 链接...');
+            let gameManagementFound = false;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const gameLink = page.getByRole('link', { name: 'ゲーム管理' });
+                    await gameLink.waitFor({ state: 'visible', timeout: 20000 });
+                    console.log(`✅ 第 ${attempt + 1} 次尝试：找到 ゲーム管理 链接`);
+                    await gameLink.click();
+                    gameManagementFound = true;
+                    break;
+                } catch (e) {
+                    console.warn(`⚠️ 第 ${attempt + 1} 次尝试失败: ${e.message}`);
+                    if (attempt < 2) {
+                        console.log('⏳ 等待后重试...');
+                        await page.waitForTimeout(3000);
+                    }
+                }
+            }
+
+            if (!gameManagementFound) {
+                throw new Error('无法找到 ゲーム管理 链接，已尝试3次');
+            }
+
+            await page.waitForLoadState('networkidle', { timeout: 45000 });
 
             // 3. 升级 / 延长
+            console.log('⏳ 正在查找 アップグレード・期限延長 链接...');
             await page.getByRole('link', { name: 'アップグレード・期限延長' }).click();
 
             // 4. 选择 '延长期间' - 检查是否可用
             try {
-                await page.getByRole('link', { name: '期限を延長する' }).waitFor({ state: 'visible', timeout: 5000 });
+                console.log('⏳ 正在查找 期限を延長する 按钮...');
+                await page.getByRole('link', { name: '期限を延長する' }).waitFor({ state: 'visible', timeout: 10000 });
                 await page.getByRole('link', { name: '期限を延長する' }).click();
             } catch (e) {
                 // 检查是否有具体的下一次更新时间提示
@@ -185,6 +220,7 @@ async function sendTelegramNotification(message, imagePath = null) {
             }
 
             // 5. 确认
+            console.log('⏳ 正在点击确认按钮...');
             await page.getByRole('button', { name: '確認画面に進む' }).click();
 
             // 6. 执行延长
