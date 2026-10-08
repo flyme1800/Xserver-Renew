@@ -90,6 +90,82 @@ async function sendTelegramNotification(message, imagePath = null) {
         console.error('发送 Telegram 通知时出错:', error);
     }
 }
+
+// ✨ 新增：处理 Cloudflare Turnstile 验证
+async function handleTurnstileVerification(page, timeout = 60000) {
+    console.log('🔐 正在处理 Cloudflare Turnstile 验证...');
+    
+    try {
+        // 1. 等待 Turnstile iframe 出现
+        console.log('⏳ 等待 Turnstile iframe 加载...');
+        const turnstileFrame = await page.waitForSelector('iframe[src*="challenges.cloudflare.com"]', { 
+            timeout: 10000 
+        }).catch(() => null);
+
+        if (!turnstileFrame) {
+            console.log('ℹ️ 未检测到 Turnstile iframe，可能页面无需验证或已验证');
+            return true;
+        }
+
+        console.log('✅ 检测到 Turnstile iframe');
+        
+        // 2. 等待复选框出现
+        console.log('⏳ 等待 Turnstile 复选框加载...');
+        await page.waitForSelector('input[type="checkbox"][data-sitekey], .cf-checkbox', { 
+            timeout: 15000 
+        }).catch(() => null);
+
+        // 3. 点击 Turnstile 复选框 - "私はロボットではありません"
+        console.log('🖱️ 点击 Turnstile 验证复选框...');
+        
+        // 尝试多种选择器
+        const checkboxSelectors = [
+            'input[type="checkbox"]',
+            '.cf-checkbox',
+            '[data-sitekey] input',
+            'div[role="presentation"] input'
+        ];
+
+        let clicked = false;
+        for (const selector of checkboxSelectors) {
+            try {
+                const element = await page.$(selector);
+                if (element) {
+                    await page.locator(selector).first().click({ timeout: 5000 });
+                    console.log(`✅ 已点击复选框 (选择器: ${selector})`);
+                    clicked = true;
+                    break;
+                }
+            } catch (e) {
+                console.log(`⚠️ 尝试选择器 ${selector} 失败: ${e.message}`);
+            }
+        }
+
+        if (!clicked) {
+            console.warn('⚠️ 未能点击 Turnstile 复选框，尝试继续...');
+        }
+
+        // 4. 等待验证完成（Cloudflare 处理验证）
+        console.log('⏳ 等待 Turnstile 验证完成...');
+        
+        // 检查是否有验证成功的信号
+        await page.waitForFunction(() => {
+            // 方法1: 检查 Turnstile token 是否生成
+            return window.turnstile && window.turnstile.isRendered && window.turnstile.isRendered();
+        }, { timeout: 20000 }).catch(() => {
+            console.log('ℹ️ Turnstile 验证状态检查超时，继续进行');
+        });
+
+        console.log('✅ Turnstile 验证处理完成');
+        await page.waitForTimeout(1000); // 给予额外缓冲时间
+        return true;
+
+    } catch (error) {
+        console.warn(`⚠️ Turnstile 处理异常: ${error.message}`);
+        return false;
+    }
+}
+
 // 续期流程
 (async () => {
     let users = [];
@@ -112,6 +188,10 @@ async function sendTelegramNotification(message, imagePath = null) {
     const launchOptions = {
         headless: true,
         channel: 'chrome',
+        args: [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage'
+        ]
     };
 
     // 为 Playwright 浏览器配置代理
@@ -145,23 +225,39 @@ async function sendTelegramNotification(message, imagePath = null) {
         try {
             // 1. 导航到登录页面
             console.log('⏳ 正在加载登录页面...');
-            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', { 
+                waitUntil: 'domcontentloaded', 
+                timeout: 30000 
+            });
 
             // 2. 登录
             console.log('⏳ 正在输入登录信息...');
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).click();
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).fill(user.username);
             await page.locator('#user_password').fill(user.password);
+            
             // Use an ID-based selector for the login button to avoid Playwright strict mode ambiguity
             console.log('⏳ 正在提交登录表单...');
             await page.locator('#login-submit').click();
 
+            // ✨ 处理 Turnstile 验证
+            await handleTurnstileVerification(page, 60000);
+
             // 等待登录成功并导航到首页
             console.log('⏳ 等待登录完成，加载首页...');
-            await page.waitForURL(/xapanel/, { timeout: 45000 });
             
-            // 增加额外等待时间确保页面完全加载
-            await page.waitForLoadState('networkidle', { timeout: 45000 });
+            // 使用 waitForURL 等待页面导航，但不等待 networkidle（容易超时）
+            try {
+                await page.waitForURL(/xapanel/, { timeout: 30000 });
+            } catch (e) {
+                console.warn(`⚠️ URL 等待超时，检查当前页面: ${page.url()}`);
+            }
+            
+            // 只等待 DOM 加载完成
+            await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
+                console.log('ℹ️ DOM 加载超时，继续进行');
+            });
+            
             await page.waitForTimeout(2000);
 
             // 尝试找到并点击 "ゲーム管理" 链接，增加重试机制
@@ -188,7 +284,10 @@ async function sendTelegramNotification(message, imagePath = null) {
                 throw new Error('无法找到 ゲーム管理 链接，已尝试3次');
             }
 
-            await page.waitForLoadState('networkidle', { timeout: 45000 });
+            // 等待页面加载，但改为 domcontentloaded 而非 networkidle
+            await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {
+                console.log('ℹ️ DOM 加载超时，继续进行');
+            });
 
             // 3. 升级 / 延长
             console.log('⏳ 正在查找 アップグレード・期限延長 链接...');
