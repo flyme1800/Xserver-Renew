@@ -90,100 +90,13 @@ async function sendTelegramNotification(message, imagePath = null) {
     }
 }
 
-/**
- * 🔐 最终版：处理 Cloudflare Turnstile
- * 关键：等待足够长的时间让 Cloudflare 生成 token
- */
-async function ensureTurnstileReady(page) {
-    console.log('🔐 [Turnstile] 初始化校验...');
-
-    const challengeFound = await page.$('iframe[src*="challenges.cloudflare.com"], [data-sitekey], .cf-turnstile, [class*="turnstile"]').catch(() => null);
-    if (!challengeFound) {
-        console.log('ℹ️ [Turnstile] 当前页面没有检测到 Cloudflare challenge');
-        return true;
-    }
-
-    console.log('✅ [Turnstile] 检测到 Cloudflare challenge 容器');
-
-    // 步骤1: 点击验证控件
-    console.log('🖱️ [Turnstile] 尝试真实点击 Cloudflare 验证控件...');
-    
-    const selectors = [
-        '[data-sitekey]',
-        '.cf-turnstile',
-        '[class*="turnstile"]',
-        'input[type="checkbox"]',
-        '[role="checkbox"]',
-        '.cf-checkbox'
-    ];
-
-    let clicked = false;
-    for (const selector of selectors) {
-        try {
-            const locator = page.locator(selector).first();
-            await locator.waitFor({ state: 'visible', timeout: 5000 });
-            await locator.click({ force: true, timeout: 5000 });
-            console.log(`✅ [Turnstile] 已点击页面元素: ${selector}`);
-            clicked = true;
-            break;
-        } catch (e) {
-            // continue
-        }
-    }
-
-    if (!clicked) {
-        console.warn('⚠️ [Turnstile] 未能通过 Playwright 点击，尝试 JS 触发');
-        try {
-            await page.evaluate(() => {
-                const selectors = [
-                    '[data-sitekey]',
-                    '.cf-turnstile',
-                    '[class*="turnstile"]',
-                    'input[type="checkbox"]',
-                    '[role="checkbox"]',
-                    '.cf-checkbox'
-                ];
-
-                for (const selector of selectors) {
-                    const element = document.querySelector(selector);
-                    if (element) {
-                        const events = ['mousedown', 'mouseup', 'click'];
-                        for (const eventName of events) {
-                            element.dispatchEvent(new MouseEvent(eventName, {
-                                bubbles: true,
-                                cancelable: true,
-                                view: window
-                            }));
-                        }
-                        return true;
-                    }
-                }
-                return false;
-            });
-            console.log('✅ [Turnstile] 已通过 JS 事件触发点击');
-            clicked = true;
-        } catch (e) {
-            console.warn(`⚠️ [Turnstile] JS 触发失败: ${e.message}`);
-        }
-    }
-
-    // 步骤2: 等待 Cloudflare 处理验证（关键：需要足够长的等待时间）
-    console.log('⏳ [Turnstile] 等待 Cloudflare 处理验证...');
-    await page.waitForTimeout(3000); // 给予 Cloudflare 初始化的时间
-
-    // 步骤3: 监听 Turnstile 状态变化（检查是否有 callback 事件）
-    console.log('⏳ [Turnstile] 监听验证状态...');
-    
-    const tokenReady = await page.waitForFunction(() => {
-        // 检查方式1: 隐藏字段中是否生成了 token
-        const responseField = document.querySelector(
-            'input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]'
-        );
+async function isTurnstileSolved(page) {
+    return await page.evaluate(() => {
+        const responseField = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]');
         if (responseField && responseField.value && responseField.value.length > 0) {
             return true;
         }
 
-        // 检查方式2: window.turnstile 是否有 getResponse 且返回值非空
         if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
             const response = window.turnstile.getResponse();
             if (response && response.length > 0) {
@@ -191,27 +104,115 @@ async function ensureTurnstileReady(page) {
             }
         }
 
-        // 检查方式3: 检查 Turnstile 是否标记为已解决
-        const turnstileWidget = document.querySelector('[data-sitekey]');
-        if (turnstileWidget && turnstileWidget.getAttribute('data-state') === 'solved') {
-            return true;
-        }
+        const widget = document.querySelector('[data-sitekey]');
+        return widget && widget.getAttribute('data-state') === 'solved';
+    }).catch(() => false);
+}
 
-        return false;
-    }, { timeout: 45000 }).catch(() => false);
+/**
+ * 🔐 更稳妥地处理 Cloudflare Turnstile
+ * 重点：支持 iframe内点击、重复检测、在提交前再次验证
+ */
+async function ensureTurnstileReady(page, { timeoutMs = 60000, allowContinueOnTimeout = true } = {}) {
+    console.log('🔐 [Turnstile] 初始化校验...');
 
-    if (tokenReady) {
-        console.log('✅ [Turnstile] 验证已完成，token 已生成');
-        await page.waitForTimeout(1000); // 稳定等待
+    const challengeSelector = 'iframe[src*="challenges.cloudflare.com"], [data-sitekey], .cf-turnstile, [class*="turnstile"]';
+    const challengeFound = await page.locator(challengeSelector).first().count().then(v => v > 0).catch(() => false);
+    if (!challengeFound) {
+        console.log('ℹ️ [Turnstile] 当前页面没有检测到 Cloudflare challenge');
         return true;
     }
 
-    // 步骤4: 如果 token 未生成但页面已加载，可能 Cloudflare 会在登录时处理
-    console.log('⚠️ [Turnstile] token 未在规定时间内生成，但尝试继续提交');
-    console.log('ℹ️ [Turnstile] 可能是 Cloudflare 会在登录时动态验证');
-    
-    // 继续进行，让登录流程尝试处理
-    return true;
+    console.log('✅ [Turnstile] 检测到 Cloudflare challenge 容器');
+
+    const clickAttempts = [
+        async () => {
+            const iframe = page.locator('iframe[src*="challenges.cloudflare.com"]').first();
+            if (await iframe.count()) {
+                await iframe.click({ force: true, timeout: 5000 });
+                console.log('✅ [Turnstile] 已点击 iframe challenge 容器');
+                return true;
+            }
+            return false;
+        },
+        async () => {
+            const widget = page.locator('[data-sitekey]').first();
+            if (await widget.count()) {
+                await widget.click({ force: true, timeout: 5000 });
+                console.log('✅ [Turnstile] 已点击 [data-sitekey] 控件');
+                return true;
+            }
+            return false;
+        },
+        async () => {
+            const widget = page.locator('.cf-turnstile, [class*="turnstile"]').first();
+            if (await widget.count()) {
+                await widget.click({ force: true, timeout: 5000 });
+                console.log('✅ [Turnstile] 已点击 .cf-turnstile 控件');
+                return true;
+            }
+            return false;
+        },
+        async () => {
+            await page.evaluate(() => {
+                const selectors = ['[data-sitekey]', '.cf-turnstile', '[class*="turnstile"]', 'input[type="checkbox"]', '[role="checkbox"]', '.cf-checkbox'];
+                for (const selector of selectors) {
+                    const element = document.querySelector(selector);
+                    if (!element) continue;
+                    const events = ['mousedown', 'mouseup', 'click'];
+                    for (const eventName of events) {
+                        element.dispatchEvent(new MouseEvent(eventName, {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                        }));
+                    }
+                    return true;
+                }
+                return false;
+            });
+            console.log('✅ [Turnstile] 已通过 JS 事件触发点击');
+            return true;
+        }
+    ];
+
+    for (const clickAttempt of clickAttempts) {
+        try {
+            const result = await clickAttempt();
+            if (result) break;
+        } catch (e) {
+            // continue
+        }
+    }
+
+    console.log('⏳ [Turnstile] 等待 Cloudflare 处理验证...');
+    await page.waitForTimeout(4000);
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        if (await isTurnstileSolved(page)) {
+            console.log('✅ [Turnstile] 验证已完成，token 已生成');
+            await page.waitForTimeout(1500);
+            return true;
+        }
+
+        const rawBody = await page.locator('body').innerText().catch(() => '');
+        if (rawBody.includes('私はロボットではありません') || rawBody.includes('robot')) {
+            console.warn('⚠️ 页面提示 Turnstile 尚未通过验证');
+            if (!allowContinueOnTimeout) return false;
+            break;
+        }
+
+        await page.waitForTimeout(1000);
+    }
+
+    if (allowContinueOnTimeout) {
+        console.log('⚠️ [Turnstile] token 未在规定时间内生成，但尝试继续提交');
+        console.log('ℹ️ [Turnstile] 可能是 Cloudflare 会在登录时动态验证');
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -225,13 +226,11 @@ async function waitForLoginSuccess(page, timeout = 60000) {
         try {
             const currentUrl = page.url();
             
-            // 成功进入控制面板
             if (currentUrl.includes('xapanel') && !currentUrl.includes('login')) {
                 console.log('✅ 成功导航到控制面板');
                 return true;
             }
 
-            // 检查是否停留在登录页面（验证失败）
             const bodyText = await page.locator('body').innerText().catch(() => '');
             
             if (bodyText.includes('私はロボットではありません')) {
@@ -280,7 +279,8 @@ async function waitForLoginSuccess(page, timeout = 60000) {
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
             '--enable-automation=false',
-            '--disable-web-resources'
+            '--disable-web-resources',
+            '--disable-features=IsolateOrigins,site-per-process'
         ]
     };
 
@@ -310,7 +310,10 @@ async function waitForLoginSuccess(page, timeout = 60000) {
         console.log('═'.repeat(60));
 
         const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale: 'ja-JP',
+            timezoneId: 'Asia/Tokyo',
+            viewport: { width: 1440, height: 1200 }
         });
         const page = await context.newPage();
 
@@ -321,7 +324,6 @@ async function waitForLoginSuccess(page, timeout = 60000) {
                 timeout: 30000
             });
 
-            // 处理 Turnstile 验证
             await ensureTurnstileReady(page);
 
             console.log('⏳ 正在输入登录凭证...');
@@ -332,12 +334,24 @@ async function waitForLoginSuccess(page, timeout = 60000) {
             const passwordInput = page.locator('#user_password');
             await passwordInput.fill(user.password);
 
+            await ensureTurnstileReady(page, { timeoutMs: 20000, allowContinueOnTimeout: true });
+
             console.log('⏳ 正在提交登录表单...');
             await page.locator('#login-submit').click();
 
             const loginSuccess = await waitForLoginSuccess(page, 60000);
             if (!loginSuccess) {
-                throw new Error('登录失败或超时，未能进入控制面板');
+                const pageText = await page.locator('body').innerText().catch(() => '');
+                if (pageText.includes('私はロボットではありません') || pageText.includes('cf-turnstile')) {
+                    await ensureTurnstileReady(page, { timeoutMs: 30000, allowContinueOnTimeout: true });
+                    await page.locator('#login-submit').click();
+                    const secondAttempt = await waitForLoginSuccess(page, 30000);
+                    if (!secondAttempt) {
+                        throw new Error('登录失败或超时，未能进入控制面板');
+                    }
+                } else {
+                    throw new Error('登录失败或超时，未能进入控制面板');
+                }
             }
 
             console.log('⏳ 等待页面完全加载...');
