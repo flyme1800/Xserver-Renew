@@ -150,7 +150,8 @@ async function sendTelegramNotification(message, imagePath = null) {
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).click();
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).fill(user.username);
             await page.locator('#user_password').fill(user.password);
-            await page.getByRole('button', { name: 'ログインする' }).click();
+            // Use an ID-based selector for the login button to avoid Playwright strict mode ambiguity
+            await page.locator('#login-submit').click();
 
             // 等待导航
             await page.getByRole('link', { name: 'ゲーム管理' }).click();
@@ -172,7 +173,7 @@ async function sendTelegramNotification(message, imagePath = null) {
                 if (match && match[1]) {
                     msg = `🇯🇵 Xserver 续期通知\n\n⚠️ 未到续期时间\n👤 账户 ${user.username} 可续期：${match[1]}\n🕐 运行时间：${getShanghaiTime()}`;
                 } else {
-                    msg = `🇯🇵 Xserver 续期通知\n\n⚠️ 用户 ${user.username} 未找到 '期限延长' 按钮。可能无法延长。\n\n🕐 运行时间：${getShanghaiTime()}`;
+                    msg = `🇯🇵 Xserver 续期通知\n\n⚠️ 用户 ${user.username} 未找到 '期限延長' 按钮。可能无法延长。\n\n🕐 运行时间：${getShanghaiTime()}`;
                 }
 
                 console.log(msg);
