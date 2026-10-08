@@ -91,128 +91,95 @@ async function sendTelegramNotification(message, imagePath = null) {
 }
 
 /**
- * 🔐 核心：处理 Cloudflare Turnstile 验证
- * 这个函数确保在登录提交前，Turnstile widget 已加载并可交互
+ * 🔐 处理 Cloudflare Turnstile：真实点击 iframe 内 checkbox，并等待 token 生成
  */
-async function ensureTurnstileReady(page, timeout = 45000) {
-    console.log('🔐 [Turnstile] 检查并等待 Turnstile widget 加载完成...');
-    
-    const startTime = Date.now();
-    let turnstileLoaded = false;
+async function ensureTurnstileReady(page, timeout = 60000) {
+    console.log('🔐 [Turnstile] 等待并点击 Turnstile 复选框...');
+    const startedAt = Date.now();
 
     try {
-        // ========== 第一步：等待 Turnstile iframe 加载 ==========
-        console.log('⏳ [Turnstile] 等待 Turnstile iframe 加载...');
-        
-        try {
-            await page.waitForSelector(
-                'iframe[src*="challenges.cloudflare.com"], iframe[data-sitekey], [data-sitekey]',
-                { timeout: 15000 }
-            );
-            console.log('✅ [Turnstile] 检测到 Turnstile widget');
-            turnstileLoaded = true;
-        } catch (e) {
-            console.log('ℹ️ [Turnstile] 页面上未发现 Turnstile iframe - 可能不需要验证或已预加载');
-        }
+        // 1) 等待线程 iframe 出现
+        await page.waitForSelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]', {
+            timeout: 20000
+        }).catch(() => console.log('ℹ️ [Turnstile] iframe 未出现，继续检查现有页面'));
 
-        // ========== 第二步：等待 Turnstile 脚本加载到 window.turnstile ==========
-        console.log('⏳ [Turnstile] 等待 Cloudflare Turnstile 脚本初始化...');
-        
-        try {
-            await page.waitForFunction(
-                () => typeof window.turnstile !== 'undefined',
-                { timeout: 20000 }
-            );
-            console.log('✅ [Turnstile] Turnstile 脚本已加载');
-        } catch (e) {
-            console.log('⚠️ [Turnstile] Turnstile 脚本未加载，尝试继续');
-        }
+        // 2) 获取 Cloudflare iframe
+        const frame = page.frames().find(f => /challenges\.cloudflare\.com|turnstile/i.test(f.url()));
 
-        // ========== 第三步：等待复选框出现并可见 ==========
-        console.log('⏳ [Turnstile] 等待复选框元素加载...');
-        
-        const checkboxSelectors = [
-            'input[type="checkbox"]',
-            '[role="checkbox"]',
-            '.cf-checkbox',
-            'label input[type="checkbox"]'
-        ];
+        if (frame) {
+            console.log('✅ [Turnstile] 找到 Cloudflare iframe');
 
-        let checkboxFound = false;
-        for (const selector of checkboxSelectors) {
-            try {
-                await page.waitForSelector(selector, { timeout: 8000 });
-                console.log(`✅ [Turnstile] 找到复选框 (选择器: ${selector})`);
-                checkboxFound = true;
-                break;
-            } catch (e) {
-                // 继续尝试下一个选择器
-            }
-        }
+            const retryClick = async () => {
+                const selectors = [
+                    'input[type="checkbox"]',
+                    '.cf-turnstile',
+                    'label',
+                    '[role="checkbox"]'
+                ];
 
-        if (!checkboxFound) {
-            console.log('⚠️ [Turnstile] 未能定位复选框，可能已自动验证或页面结构不同');
-        }
-
-        // ========== 第四步：模拟真实用户行为 - 点击复选框 ==========
-        if (checkboxFound) {
-            console.log('🖱️ [Turnstile] 模拟用户点击复选框...');
-            
-            try {
-                // 先滚动到元素位置
-                await page.locator('input[type="checkbox"]').first().scrollIntoViewIfNeeded();
-                await page.waitForTimeout(500);
-                
-                // 使用真实点击（模拟鼠标移动）
-                const checkbox = await page.$('input[type="checkbox"]');
-                if (checkbox) {
-                    const box = await checkbox.boundingBox();
-                    if (box) {
-                        // 移动鼠标到元素
-                        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-                        await page.waitForTimeout(300);
-                        // 点击
-                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-                        console.log('✅ [Turnstile] 已点击复选框');
+                for (const selector of selectors) {
+                    const candidate = frame.locator(selector).first();
+                    try {
+                        await candidate.waitFor({ state: 'visible', timeout: 5000 });
+                        await candidate.click({ force: true, timeout: 5000 });
+                        console.log(`✅ [Turnstile] 已点击 iframe 中的元素: ${selector}`);
+                        return true;
+                    } catch (e) {
+                        // continue
                     }
                 }
-            } catch (e) {
-                console.warn(`⚠️ [Turnstile] 点击复选框失败: ${e.message}`);
+                return false;
+            };
+
+            const clicked = await retryClick();
+            if (!clicked) {
+                console.warn('⚠️ [Turnstile] iframe 内复选框未点击成功');
+            }
+        } else {
+            // 3) fallback: 直接在页面中寻找 checkbox / data-sitekey
+            const pageSelectors = [
+                '[data-sitekey]',
+                'input[type="checkbox"]',
+                '.cf-checkbox',
+                '[role="checkbox"]'
+            ];
+
+            let pageChecked = false;
+            for (const selector of pageSelectors) {
+                try {
+                    const candidate = page.locator(selector).first();
+                    await candidate.waitFor({ state: 'visible', timeout: 5000 });
+                    await candidate.click({ force: true, timeout: 5000 });
+                    console.log(`✅ [Turnstile] 已点击页面中的元素: ${selector}`);
+                    pageChecked = true;
+                    break;
+                } catch (e) {
+                    // continue
+                }
+            }
+
+            if (!pageChecked) {
+                console.warn('⚠️ [Turnstile] 页面中未发现可点击控件');
             }
         }
 
-        // ========== 第五步：等待 Cloudflare 挑战完成 ==========
-        console.log('⏳ [Turnstile] 等待 Cloudflare 验证完成...');
-        
-        const waitForVerification = await page.waitForFunction(
-            () => {
-                // 检查多个验证完成的信号
-                const hasToken = window.turnstile && typeof window.turnstile.getResponse === 'function';
-                const tokenValue = hasToken ? window.turnstile.getResponse() : null;
-                const inputFound = document.querySelector('input[name="cf_clearance"], input[name="token"]');
-                
-                return hasToken || inputFound || (tokenValue && tokenValue.length > 0);
-            },
-            { timeout: 30000 }
-        ).catch(() => {
-            console.log('ℹ️ [Turnstile] 验证状态检查超时，继续进行');
-            return false;
+        // 4) 等待 token 生成；不要只看脚本加载，而要看实际返回值
+        console.log('⏳ [Turnstile] 等待返回 token / 验证完成...');
+        await page.waitForFunction(() => {
+            const field = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]');
+            return !!(field && field.value && field.value.length > 0);
+        }, { timeout: 30000 }).catch(() => {
+            console.log('ℹ️ [Turnstile] 未生成 cf-turnstile-response，继续等待 final login');
         });
 
-        if (waitForVerification) {
-            console.log('✅ [Turnstile] 验证已完成');
-        }
-
-        // ========== 第六步：等待页面稳定 ==========
-        console.log('⏳ [Turnstile] 等待页面稳定...');
+        // 5) 额外等待让 Cloudflare 完成状态切换，避免提交前太快
         await page.waitForTimeout(1500);
 
-        const elapsedTime = Date.now() - startTime;
-        console.log(`✅ [Turnstile] 处理完成 (耗时: ${elapsedTime}ms)`);
+        console.log(`✅ [Turnstile] 处理完毕，耗时: ${Date.now() - startedAt}ms`);
         return true;
 
     } catch (error) {
-        console.error(`❌ [Turnstile] 验证处理出错: ${error.message}`);
+        console.warn(`⚠️ [Turnstile] 处理异常: ${error.message}`);
         return false;
     }
 }
@@ -223,37 +190,28 @@ async function ensureTurnstileReady(page, timeout = 45000) {
  */
 async function waitForLoginSuccess(page, timeout = 60000) {
     console.log('⏳ 等待登录成功...');
-    
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
         try {
-            // 检查是否已导航到控制面板
             const currentUrl = page.url();
             if (currentUrl.includes('xapanel') && !currentUrl.includes('login')) {
                 console.log('✅ 成功导航到控制面板');
                 return true;
             }
 
-            // 检查是否显示错误提示
-            const errorElements = await page.locator('[class*="error"], [class*="alert"], .alert-danger').all();
-            for (const elem of errorElements) {
-                const text = await elem.innerText().catch(() => '');
-                if (text && text.length > 0) {
-                    console.warn(`⚠️ 检测到错误提示: ${text.substring(0, 100)}`);
-                    return false;
-                }
+            const bodyText = await page.locator('body').innerText().catch(() => '');
+            if (bodyText.includes('私はロボットではありません') || bodyText.includes('cf-turnstile') || bodyText.includes('Check the box')) {
+                console.warn('⚠️ 页面仍停留在 Turnstile 验证状态');
+                return false;
             }
 
-            // 检查是否有红色的"エラー"（错误）提示
-            const bodyText = await page.locator('body').innerText().catch(() => '');
-            if (bodyText.includes('エラーが発生') || bodyText.includes('ログイン失敗')) {
+            if (bodyText.includes('エラーが発生') || bodyText.includes('ログイン失敗') || bodyText.includes('アカウント')) {
                 console.warn('⚠️ 检测到登录错误提示');
                 return false;
             }
 
             await page.waitForTimeout(500);
-
         } catch (e) {
             console.log(`ℹ️ 检查登录状态时出错: ${e.message}`);
             await page.waitForTimeout(500);
@@ -294,7 +252,6 @@ async function waitForLoginSuccess(page, timeout = 60000) {
         ]
     };
 
-    // 为 Playwright 浏览器配置代理
     if (IS_PROXY && PROXY_SERVER) {
         launchOptions.proxy = { server: PROXY_SERVER };
         console.log(`✅ 浏览器代理已启用: ${PROXY_SERVER}`);
@@ -304,7 +261,6 @@ async function waitForLoginSuccess(page, timeout = 60000) {
 
     const browser = await chromium.launch(launchOptions);
 
-    // 获取出站真实 IP
     try {
         const ipRes = await fetch('https://api.ip.sb/ip');
         if (ipRes.ok) {
@@ -320,75 +276,56 @@ async function waitForLoginSuccess(page, timeout = 60000) {
     for (const user of users) {
         console.log(`\n👤 正在处理用户: ${user.username}`);
         console.log('═'.repeat(60));
-        
-        // ✨ 在创建 context 时设置 User-Agent（正确的方式）
+
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         });
         const page = await context.newPage();
 
         try {
-            // ========== 第1步：加载登录页面 ==========
             console.log('⏳ 正在加载登录页面...');
-            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', { 
-                waitUntil: 'domcontentloaded', 
-                timeout: 30000 
+            await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
             });
 
-            // ========== 第2步：检测并等待 Turnstile 加载 ==========
-            await ensureTurnstileReady(page, 45000);
+            await ensureTurnstileReady(page, 60000);
 
-            // ========== 第3步：填写登录信息 ==========
             console.log('⏳ 正在输入登录凭证...');
-            
-            const emailInput = page.getByRole('textbox', { 
-                name: 'XServerアカウントID または メールアドレス' 
-            });
+            const emailInput = page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' });
             await emailInput.click();
             await emailInput.fill(user.username);
-            
+
             const passwordInput = page.locator('#user_password');
             await passwordInput.fill(user.password);
 
-            // ========== 第4步：提交登录 ==========
             console.log('⏳ 正在提交登录表单...');
-            const loginButton = page.locator('#login-submit');
-            await loginButton.click();
+            await page.locator('#login-submit').click();
 
-            // ========== 第5步：等待登录成功（核心逻辑） ==========
             const loginSuccess = await waitForLoginSuccess(page, 60000);
-
             if (!loginSuccess) {
                 throw new Error('登录失败或超时，未能进入控制面板');
             }
 
-            // ========== 第6步：页面稳定等待 ==========
             console.log('⏳ 等待页面完全加载...');
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(2000);
 
-            // ========== 第7步：点击"ゲーム管理" ==========
             console.log('⏳ 正在查找并点击 ゲーム管理 链接...');
             let gameManagementFound = false;
-
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
                     const gameLink = page.getByRole('link', { name: 'ゲーム管理' });
                     await gameLink.waitFor({ state: 'visible', timeout: 15000 });
                     console.log(`✅ 第 ${attempt + 1} 次尝试：找到 ゲーム管理 链接`);
-                    
                     await gameLink.click();
                     gameManagementFound = true;
                     break;
-
                 } catch (e) {
                     console.warn(`⚠️ 第 ${attempt + 1} 次尝试失败: ${e.message}`);
-
-                    // 保存调试截图
                     const debugPath = `debug_game_link_${user.username}_attempt${attempt + 1}.png`;
                     await page.screenshot({ path: debugPath });
                     console.log(`💾 已保存调试截图: ${debugPath}`);
-
                     if (attempt < 2) {
                         await page.waitForTimeout(2000);
                     }
@@ -399,21 +336,16 @@ async function waitForLoginSuccess(page, timeout = 60000) {
                 throw new Error('无法找到 ゲーム管理 链接，已尝试3次');
             }
 
-            // 等待页面加载
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
 
-            // ========== 第8步：升级/延长 ==========
             console.log('⏳ 正在查找 アップグレード・期限延長 链接...');
             await page.getByRole('link', { name: 'アップグレード・期限延長' }).click();
 
-            // ========== 第9步：选择延长期间 ==========
             try {
                 console.log('⏳ 正在查找 期限を延長する 按钮...');
                 await page.getByRole('link', { name: '期限を延長する' }).waitFor({ state: 'visible', timeout: 10000 });
                 await page.getByRole('link', { name: '期限を延長する' }).click();
-
             } catch (e) {
-                // 检查是否有续期时间限制
                 const bodyText = await page.locator('body').innerText();
                 const match = bodyText.match(/更新をご希望の場合は、(.+?)以降にお試しください。/);
 
@@ -431,18 +363,13 @@ async function waitForLoginSuccess(page, timeout = 60000) {
                 continue;
             }
 
-            // ========== 第10步：确认 ==========
             console.log('⏳ 正在点击确认按钮...');
             await page.getByRole('button', { name: '確認画面に進む' }).click();
 
-            // ========== 第11步：最终执行延长 ==========
             console.log(`🖱️ 正在执行续期操作 (${user.username})...`);
             await page.getByRole('button', { name: '期限を延長する' }).click();
-
-            // ========== 第12步：返回首页 ==========
             await page.getByRole('link', { name: '戻る' }).click();
 
-            // ========== 成功 ==========
             const successMsg = `🇯🇵 Xserver 续期通知\n\n✅ 续期成功\n👤 账户 ${user.username}\n🕐 运行时间：${getShanghaiTime()}`;
             console.log(successMsg);
             console.log('═'.repeat(60));
@@ -452,7 +379,6 @@ async function waitForLoginSuccess(page, timeout = 60000) {
             await sendTelegramNotification(successMsg, successPath);
 
         } catch (error) {
-            // ========== 失败处理 ==========
             const errorMsg = `❌ Xserver 续期通知\n\n❌ 续期失败\n👤 账户 ${user.username}\n❌ 错误：${error.message || error}\n🕐 运行时间：${getShanghaiTime()}`;
             console.error(errorMsg);
             console.log('═'.repeat(60));
@@ -460,7 +386,6 @@ async function waitForLoginSuccess(page, timeout = 60000) {
             const errorPath = `error_${user.username}.png`;
             await page.screenshot({ path: errorPath });
             await sendTelegramNotification(errorMsg, errorPath);
-
         } finally {
             await context.close();
         }
