@@ -2,14 +2,14 @@ name: XServer Renew
 
 on:
   schedule:
-    - cron: '0 1 */2 * *'  # Runs every 24 hours at 01:00 UTC
-  workflow_dispatch: 
+    - cron: '0 1 */2 * *'
+  workflow_dispatch:
 
 jobs:
   renew:
     runs-on: ubuntu-latest
     permissions:
-      actions: write  
+      actions: write
       contents: read
 
     steps:
@@ -22,8 +22,9 @@ jobs:
         node-version: '22'
 
     - name: 🛠️ 安装依赖
-      run: npm install
-           npx playwright install --with-deps chrome
+      run: |
+        npm install
+        npx playwright install --with-deps chrome
 
     - name: ⚙ 设置代理 (sing-box)
       env:
@@ -34,8 +35,11 @@ jobs:
     - name: 🚀 运行续期脚本
       env:
         ACCOUNTS: ${{ secrets.ACCOUNTS }}
+        COOKIE_VALUE: ${{ secrets.COOKIE_VALUE }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        IS_PROXY: ${{ secrets.IS_PROXY || 'true' }}
+        PROXY_SERVER: ${{ secrets.PROXY_SERVER || 'socks5://127.0.0.1:1080' }}
       run: npm start || true
 
     - name: 🧽 清理进程和临时文件
@@ -46,14 +50,6 @@ jobs:
         pkill -f chrome || true
         pkill -f Xvfb || true
         rm -f sing-box sing-box-config.json sing-box.log
-
-    # - name: Upload Screenshots
-    #   if: always() 
-    #  uses: actions/upload-artifact@v6
-    #  with:
-    #    name: screenshots
-    #    path: "*.png"
-    #    retention-days: 6
 
     - name: 🧹 清理旧的工作流运行记录
       if: always()
@@ -69,4 +65,3 @@ jobs:
             gh run delete $run_id || true
           fi
         done
-        
