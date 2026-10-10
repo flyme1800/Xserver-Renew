@@ -1,50 +1,72 @@
-name: XServer Auto Renew
+name: XServer Renew
 
 on:
-  workflow_dispatch:
-
   schedule:
-    # 北京时间 05:00、07:00、17:00、21:00
-    - cron: '0 21,23,9,13 * * *'
+    - cron: '0 1 */2 * *'  # Runs every 24 hours at 01:00 UTC
+  workflow_dispatch: 
 
 jobs:
   renew:
     runs-on: ubuntu-latest
-
-    timeout-minutes: 15
+    permissions:
+      actions: write  
+      contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+    - name: ⚙ 设置 Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '22'
 
-      - name: Install npm dependencies
-        run: npm install
+    - name: 🛠️ 安装依赖
+      run: npm install
+           npx playwright install --with-deps chrome
 
-      # 关键修复：安装与 Playwright 版本匹配的 Chromium
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+    - name: ⚙ 设置代理 (sing-box)
+      env:
+        NODE_LINK: ${{ secrets.NODE_LINK }}
+      run: |
+        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
-      - name: Run XServer renewal
-        env:
-          COOKIE_VALUE: ${{ secrets.COOKIE_VALUE }}
-          ACCOUNTS: ${{ secrets.ACCOUNTS }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          IS_PROXY: ${{ secrets.IS_PROXY }}
-          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
-        run: npm start
+    - name: 🚀 运行续期脚本
+      env:
+        ACCOUNTS: ${{ secrets.ACCOUNTS }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      run: npm start || true
 
-      - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xserver-screenshots
-          path: screenshots/
-          if-no-files-found: ignore
-          retention-days: 7
+    - name: 🧽 清理进程和临时文件
+      if: always()
+      run: |
+        pkill -f sing-box || true
+        pkill -f chromedriver || true
+        pkill -f chrome || true
+        pkill -f Xvfb || true
+        rm -f sing-box sing-box-config.json sing-box.log
+
+    # - name: Upload Screenshots
+    #   if: always() 
+    #  uses: actions/upload-artifact@v6
+    #  with:
+    #    name: screenshots
+    #    path: "*.png"
+    #    retention-days: 6
+
+    - name: 🧹 清理旧的工作流运行记录
+      if: always()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+        count=0
+        for run_id in $runs; do
+          count=$((count + 1))
+          if [ $count -gt 1 ]; then
+            echo "删除运行记录: $run_id"
+            gh run delete $run_id || true
+          fi
+        done
+        
